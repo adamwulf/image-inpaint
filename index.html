@@ -175,23 +175,45 @@
     .frame.dragover { border-color: var(--accent); background: #26303f; }
     .frame.masking { border-style: solid; cursor: crosshair; }
     .frame img, .frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
-    .frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    /* Mask is painted OPAQUE on the canvas (so overlapping strokes don't darken)
+       and the whole layer is made translucent here — a single even 50% overlay
+       you can always see through. */
+    .frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.5; }
     .frame-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
     .frame-placeholder strong { color: var(--text); }
+
+    /* "Choose image…" link below an image frame (replaces the upload/sample toggle) */
+    .picker-links { margin-top: 12px; font-size: 16px; color: var(--muted); }
+    .picker-links button {
+      font-size: 16px; font-family: inherit; font-weight: 600; color: var(--accent);
+      background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .picker-links button:hover { color: #6bb4ff; background: none; }
+    .picker-links .sep { color: var(--border); margin: 0 8px; }
 
     /* Mask legend (magenta = area to regenerate) */
     .mask-legend { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin-top: 12px;
       text-transform: none; letter-spacing: 0; }
     .mask-legend .dot { width: 12px; height: 12px; border-radius: 4px; background: var(--nontop); opacity: 0.7; display: inline-block; }
 
-    /* Before / after compare (Modify tab) */
-    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    .compare figure { margin: 0; }
-    .compare figcaption { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
-    .compare figcaption.after { color: var(--chosen); }
-    .compare .frame { aspect-ratio: 1 / 1; }
-    .compare .frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
-    @media (max-width: 560px) { .compare { grid-template-columns: 1fr; } }
+    /* Version history strip (Modify tab): original + each regenerated result.
+       Clicking a thumbnail makes it the current image in the editor above.
+       Canonical family strip (style-helper): active = var(--accent) interactive blue. */
+    .versions { display: flex; gap: 12px; overflow-x: auto; padding: 6px 2px 10px; margin-top: 8px; scroll-snap-type: x proximity; }
+    .versions::-webkit-scrollbar { height: 8px; }
+    .versions::-webkit-scrollbar-track { background: transparent; }
+    .versions::-webkit-scrollbar-thumb { background: var(--bar-bg); border-radius: 4px; }
+    .versions::-webkit-scrollbar-thumb:hover { background: #3a4457; }
+    .versions-empty { color: var(--muted); font-size: 16px; padding: 4px 0; }
+    .version { flex: 0 0 auto; width: 92px; scroll-snap-align: start; background: transparent; border: none; padding: 0; cursor: pointer; text-align: center; font-family: inherit; }
+    .version .thumb { width: 92px; height: 92px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2); overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s ease; }
+    .version .thumb img, .version .thumb canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .version:hover .thumb { border-color: var(--accent); }
+    .version.active .thumb { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 1px; }
+    .version .label { display: block; margin-top: 8px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .version.active .label { color: var(--text); font-weight: 600; }
+    .version .pin { position: absolute; top: 4px; left: 4px; z-index: 2; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text); background: rgba(11,13,18,0.7); padding: 2px 5px; border-radius: 5px; }
 
     /* Describe tab: text output panel */
     .describe-output {
@@ -250,7 +272,7 @@
             <div class="output-placeholder" id="genPlaceholder">Your generated image will appear here.</div>
             <!-- generated image <img id="genImage"> gets shown here -->
           </div>
-          <div class="buttons" style="margin-top: 0">
+          <div class="buttons">
             <button id="genSendToModifyBtn" disabled>Send to Modify &rarr;</button>
             <button id="genDownloadBtn" disabled>Download</button>
           </div>
@@ -264,13 +286,9 @@
         <!-- LEFT: mask controls -->
         <div class="controls-col">
           <div class="panel">
-            <div class="segmented" id="modSource" role="group" aria-label="Source">
-              <button class="active" data-source="upload">Upload</button>
-              <button data-source="sample">Sample</button>
-            </div>
             <input type="file" id="modFileInput" accept="image/*" />
 
-            <label for="modPrompt" style="margin-top: 8px">Modify prompt</label>
+            <label for="modPrompt">Modify prompt</label>
             <textarea id="modPrompt" spellcheck="false" placeholder="What should fill the masked area? e.g. add sunglasses"></textarea>
 
             <div class="metas">
@@ -286,13 +304,12 @@
 
             <div class="buttons">
               <button class="primary" id="modRunBtn" disabled>Regenerate masked &rarr;</button>
-              <button id="modUndoBtn" disabled>Undo</button>
               <button id="modClearMaskBtn" disabled>Clear mask</button>
             </div>
 
             <div class="mask-legend"><span class="dot"></span>Painted area will be regenerated</div>
 
-            <div class="model-line" id="modModelLine">gpt-image-1-mini &middot; masked edit (inpaint)</div>
+            <div class="model-line" id="modModelLine">gpt-image-1 &middot; masked edit (inpaint)</div>
             <div class="track" id="modTrack" hidden><div class="fill" id="modFill" style="width: 0%"></div></div>
             <div class="status" id="modStatus">Load an image, then paint the area to regenerate.</div>
           </div>
@@ -302,22 +319,25 @@
         <div class="output-col">
           <div class="frame drop" id="modFrame">
             <div class="frame-placeholder" id="modPlaceholder">
-              <strong>Load an image to edit</strong><br />upload one, pick a sample, or send one from Generate
+              <strong>Load an image to edit</strong><br />choose one below, or send one from Generate
             </div>
             <!-- base image <img id="modImage"> below; mask canvas #maskCanvas painted on top -->
             <canvas class="mask" id="maskCanvas"></canvas>
           </div>
 
-          <p class="section-label" style="margin-top: 22px">Before / after</p>
-          <div class="compare">
-            <figure>
-              <figcaption>Original</figcaption>
-              <div class="frame"><div class="frame-placeholder" id="modBeforeSlot">&mdash;</div></div>
-            </figure>
-            <figure>
-              <figcaption class="after">Result</figcaption>
-              <div class="frame"><div class="frame-placeholder" id="modAfterSlot">&mdash;</div></div>
-            </figure>
+          <div class="picker-links">
+            <button type="button" id="modChooseBtn">Choose image&hellip;</button>
+            <span class="sep">&middot;</span>
+            <button type="button" id="modSampleBtn">or use a sample</button>
+          </div>
+
+          <p class="section-label" style="margin-top: 22px">Versions &middot; click one to keep editing it</p>
+          <!-- Version history: the original (pinned, index 0) plus every regenerated
+               result. The active version is what the editor above shows and masks
+               against; clicking a thumbnail makes it current so you can touch it up
+               further. Canonical family strip (style-helper). -->
+          <div class="versions" id="modVersions">
+            <div class="versions-empty" id="modVersionsEmpty">Load an image and regenerate &mdash; each version shows up here.</div>
           </div>
         </div>
       </div>
@@ -335,17 +355,19 @@
               <button data-mode="ocr">Read text</button>
             </div>
 
-            <div class="segmented" id="descSource" role="group" aria-label="Source">
-              <button class="active" data-source="upload">Upload</button>
-              <button data-source="sample">Sample</button>
-            </div>
             <input type="file" id="descFileInput" accept="image/*" />
 
-            <div class="frame drop" id="descFrame" style="margin-top: 8px">
+            <div class="frame drop" id="descFrame">
               <div class="frame-placeholder" id="descPlaceholder">
-                <strong>Load an image to describe</strong><br />upload one or pick a sample
+                <strong>Load an image to describe</strong><br />choose one below
               </div>
               <!-- base image <img id="descImage"> shown here -->
+            </div>
+
+            <div class="picker-links">
+              <button type="button" id="descChooseBtn">Choose image&hellip;</button>
+              <span class="sep">&middot;</span>
+              <button type="button" id="descSampleBtn">or use a sample</button>
             </div>
 
             <div class="buttons">
@@ -368,6 +390,10 @@
 
     <p class="footnote repo-link">
       Source on <a href="https://github.com/adamwulf/image-inpaint" target="_blank" rel="noopener">GitHub</a>.
+      Sample photo by
+      <a href="https://unsplash.com/@alvannee?utm_source=unsplash&amp;utm_medium=referral&amp;utm_content=creditShareLink" target="_blank" rel="noopener">Alvan Nee</a>
+      on
+      <a href="https://unsplash.com/photos/fluffy-white-dog-shaking-its-head-water-droplets-flying-rpkBHHu2TyE?utm_source=unsplash&amp;utm_medium=referral&amp;utm_content=creditShareLink" target="_blank" rel="noopener">Unsplash</a>.
     </p>
   </div>
 

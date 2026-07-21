@@ -6,8 +6,5 @@
   "private": true,
   "scripts": {
     "dev": "netlify dev"
-  },
-  "dependencies": {
-    "openai": "^4.67.0"
   }
 }

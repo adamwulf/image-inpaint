@@ -15,7 +15,10 @@
   'use strict';
 
   var MAX_EDGE = 768; // fixed longest-edge downscale before upload
-  var BRUSH_RGBA = 'rgba(224,108,255,0.5)'; // var(--nontop) @ .5
+  // Paint the mask OPAQUE (var(--nontop) magenta) so overlapping strokes stay a
+  // single flat region; the canvas element's CSS opacity:0.5 makes the whole
+  // layer an even translucent overlay you can always see through.
+  var BRUSH_COLOR = 'rgb(224,108,255)'; // var(--nontop)
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -156,12 +159,12 @@
     return data;
   }
 
-  /* Sample images (bundled clearly-labeled placeholders — see README).
-     They are self-contained SVGs (no external refs) so drawing them to a canvas
-     for downscale + getImageData does not taint it. */
+  /* Sample image. dog.png is a real Unsplash photo (Alvan Nee, Unsplash License,
+     credited in the footer), center-cropped to 768². Used for both Modify and
+     Describe "or use a sample". */
   var SAMPLES = {
-    modify: 'samples/portrait.svg',
-    describe: 'samples/street-sign.svg'
+    modify: 'samples/dog.png',
+    describe: 'samples/dog.png'
   };
 
   /* =========================================================================
@@ -253,21 +256,25 @@
     var brush = $('brushSize');
     var brushValue = $('brushSizeValue');
     var runBtn = $('modRunBtn');
-    var undoBtn = $('modUndoBtn');
     var clearBtn = $('modClearMaskBtn');
     var status = $('modStatus');
-    var sourceToggle = $('modSource');
-    var beforeSlot = $('modBeforeSlot');
-    var afterSlot = $('modAfterSlot');
+    var chooseBtn = $('modChooseBtn');
+    var sampleBtn = $('modSampleBtn');
+    var versionsEl = $('modVersions');
+    var versionsEmpty = $('modVersionsEmpty');
     var progress = makeProgress($('modTrack'), $('modFill'));
 
-    // The downscaled source lives on this offscreen canvas at <=768 px; the mask
+    // The current image lives on this offscreen canvas at <=768 px; the mask
     // canvas is sized to EXACTLY the same pixel dims so OpenAI accepts the pair.
-    var sourceCanvas = null; // { canvas, width, height }
+    var sourceCanvas = null;   // { canvas, width, height } of the CURRENT version
     var maskCtx = maskCanvas.getContext('2d');
-    var strokes = [];        // stack of completed strokes (arrays of points) for Undo
-    var currentStroke = null;
+    var painted = false;       // has anything been painted onto the mask?
     var painting = false;
+
+    // Iterative version history: v1 = the loaded original, then each result.
+    // Clicking a thumbnail makes that version current so it can be edited further.
+    var versions = [];         // [{ url, label }]
+    var currentIndex = -1;
 
     function hasImage() { return !!sourceCanvas; }
 
@@ -276,69 +283,58 @@
       var rect = maskCanvas.getBoundingClientRect();
       var cx = (e.clientX - rect.left);
       var cy = (e.clientY - rect.top);
-      // The canvas is object-fit: contain inside a square frame — but because we
-      // size the backing store to the image dims AND the element fills the frame
-      // with contain, the displayed image box may be letterboxed. Compute the
-      // actual drawn box so painting lands on the image.
+      // The canvas is object-fit: contain inside a square frame — the displayed
+      // image box may be letterboxed, so compute the actual drawn box and map back.
       var scale = Math.min(rect.width / maskCanvas.width, rect.height / maskCanvas.height);
       var drawnW = maskCanvas.width * scale;
       var drawnH = maskCanvas.height * scale;
       var offX = (rect.width - drawnW) / 2;
       var offY = (rect.height - drawnH) / 2;
-      var x = (cx - offX) / scale;
-      var y = (cy - offY) / scale;
-      return { x: x, y: y };
+      return { x: (cx - offX) / scale, y: (cy - offY) / scale };
     }
 
-    function redraw() {
-      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-      maskCtx.strokeStyle = BRUSH_RGBA;
-      maskCtx.fillStyle = BRUSH_RGBA;
+    // Paint directly onto the mask canvas as the pointer moves (no undo stack —
+    // the only mask control is Clear).
+    var lastPt = null;
+    function paintDot(p) {
+      maskCtx.fillStyle = BRUSH_COLOR;
+      maskCtx.strokeStyle = BRUSH_COLOR;
       maskCtx.lineCap = 'round';
       maskCtx.lineJoin = 'round';
-      strokes.forEach(function (s) { drawStroke(s); });
-      if (currentStroke) drawStroke(currentStroke);
-    }
-
-    function drawStroke(s) {
-      if (!s.points.length) return;
-      maskCtx.lineWidth = s.size;
-      if (s.points.length === 1) {
-        var p = s.points[0];
-        maskCtx.beginPath();
-        maskCtx.arc(p.x, p.y, s.size / 2, 0, Math.PI * 2);
-        maskCtx.fill();
-        return;
-      }
+      maskCtx.lineWidth = Number(brush.value);
+      // Always drop a round cap at the point AND connect from the previous point,
+      // so a drag reads as one continuous path rather than discrete circles.
       maskCtx.beginPath();
-      maskCtx.moveTo(s.points[0].x, s.points[0].y);
-      for (var i = 1; i < s.points.length; i++) {
-        maskCtx.lineTo(s.points[i].x, s.points[i].y);
+      maskCtx.arc(p.x, p.y, Number(brush.value) / 2, 0, Math.PI * 2);
+      maskCtx.fill();
+      if (lastPt) {
+        maskCtx.beginPath();
+        maskCtx.moveTo(lastPt.x, lastPt.y);
+        maskCtx.lineTo(p.x, p.y);
+        maskCtx.stroke();
       }
-      maskCtx.stroke();
+      lastPt = p;
+      painted = true;
     }
 
     function startPaint(e) {
       if (!hasImage()) return;
       e.preventDefault();
       painting = true;
-      currentStroke = { size: Number(brush.value), points: [] };
-      var p = eventToImagePx(e);
-      currentStroke.points.push(p);
-      redraw();
+      lastPt = null;
+      paintDot(eventToImagePx(e));
+      updateMaskButtons();
       maskCanvas.setPointerCapture && maskCanvas.setPointerCapture(e.pointerId);
     }
     function movePaint(e) {
       if (!painting) return;
       e.preventDefault();
-      currentStroke.points.push(eventToImagePx(e));
-      redraw();
+      paintDot(eventToImagePx(e));
     }
     function endPaint() {
       if (!painting) return;
       painting = false;
-      if (currentStroke && currentStroke.points.length) strokes.push(currentStroke);
-      currentStroke = null;
+      lastPt = null;
       updateMaskButtons();
     }
 
@@ -348,60 +344,146 @@
     maskCanvas.addEventListener('pointerleave', endPaint);
     maskCanvas.addEventListener('pointercancel', endPaint);
 
-    function updateMaskButtons() {
-      var canRun = hasImage() && strokes.length > 0;
-      runBtn.disabled = !canRun;
-      undoBtn.disabled = strokes.length === 0;
-      clearBtn.disabled = strokes.length === 0;
+    function clearMask() {
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      painted = false;
+      lastPt = null;
+      updateMaskButtons();
     }
 
-    // Size the mask canvas backing store to the source image's px dims. Only
-    // meaningful once the pane is visible (clientWidth-0 gotcha) — but the
-    // backing store is set to the image dims regardless of display size, and the
-    // element is stretched by CSS. We still re-run on tab show for safety.
+    function updateMaskButtons() {
+      runBtn.disabled = !(hasImage() && painted);
+      clearBtn.disabled = !painted;
+    }
+
+    // Re-assert the mask canvas backing store to the current image's px dims.
+    // A hidden .tabpane reports clientWidth 0, so this is re-run whenever the
+    // Modify tab is shown (see activateTab) as well as on each new current image.
     measureMaskCanvas = function () {
       if (!sourceCanvas) return;
       if (maskCanvas.width !== sourceCanvas.width || maskCanvas.height !== sourceCanvas.height) {
         maskCanvas.width = sourceCanvas.width;
         maskCanvas.height = sourceCanvas.height;
-        redraw();
+        clearMask();
       }
     };
 
-    // Load a base image (from upload / sample / Generate bridge) into the frame.
-    async function loadModifyImage(src) {
-      try {
-        var img = await loadImageFromSrc(src);
-        sourceCanvas = downscaleToCanvas(img, MAX_EDGE);
+    // Make a version (by its dataURL) the CURRENT image in the editor: draw it to
+    // the source canvas and size the mask to match. preserveMask keeps the current
+    // brush strokes (so you can regenerate the same region again); otherwise the
+    // mask is cleared. Note: assigning canvas.width/height ALWAYS clears the canvas,
+    // so to preserve we must snapshot and restore the pixels across a resize.
+    async function setCurrentImage(url, preserveMask) {
+      var img = await loadImageFromSrc(url);
+      sourceCanvas = downscaleToCanvas(img, MAX_EDGE);
 
-        var baseImg = $('modImage');
-        if (!baseImg) {
-          baseImg = document.createElement('img');
-          baseImg.id = 'modImage';
-          baseImg.alt = 'Image to edit';
-          frame.insertBefore(baseImg, maskCanvas);
-        }
-        baseImg.src = sourceCanvas.canvas.toDataURL('image/png');
+      var baseImg = $('modImage');
+      if (!baseImg) {
+        baseImg = document.createElement('img');
+        baseImg.id = 'modImage';
+        baseImg.alt = 'Image to edit';
+        frame.insertBefore(baseImg, maskCanvas);
+      }
+      baseImg.src = sourceCanvas.canvas.toDataURL('image/png');
 
-        if (placeholder) placeholder.style.display = 'none';
-        frame.classList.remove('drop');
-        frame.classList.add('masking');
+      if (placeholder) placeholder.style.display = 'none';
+      frame.classList.remove('drop');
+      frame.classList.add('masking');
 
-        // Mask canvas matches the source pixel dims exactly.
+      var dimsChanged = maskCanvas.width !== sourceCanvas.width ||
+                        maskCanvas.height !== sourceCanvas.height;
+
+      if (preserveMask && !dimsChanged) {
+        // Same dims + keep the strokes: nothing to do, the mask stays as painted.
+        return;
+      }
+      if (preserveMask && dimsChanged) {
+        // Different dims: rescale the existing mask onto the new-sized canvas.
+        var snapshot = document.createElement('canvas');
+        snapshot.width = maskCanvas.width;
+        snapshot.height = maskCanvas.height;
+        snapshot.getContext('2d').drawImage(maskCanvas, 0, 0);
         maskCanvas.width = sourceCanvas.width;
         maskCanvas.height = sourceCanvas.height;
-        strokes = [];
-        currentStroke = null;
-        redraw();
+        maskCtx.drawImage(snapshot, 0, 0, sourceCanvas.width, sourceCanvas.height);
+        // painted flag is unchanged; refresh button state.
         updateMaskButtons();
+        return;
+      }
+      // Default: size the mask to the image and clear it.
+      maskCanvas.width = sourceCanvas.width;
+      maskCanvas.height = sourceCanvas.height;
+      clearMask();
+    }
 
-        // Before slot mirrors the loaded original.
-        beforeSlot.innerHTML = '';
-        var beforeImg = document.createElement('img');
-        beforeImg.src = baseImg.src;
-        beforeImg.alt = 'Original';
-        beforeSlot.appendChild(beforeImg);
+    function renderVersions() {
+      if (!versions.length) {
+        versionsEl.innerHTML = '';
+        versionsEl.appendChild(versionsEmpty);
+        versionsEmpty.style.display = '';
+        return;
+      }
+      versionsEmpty.style.display = 'none';
+      versionsEl.innerHTML = '';
+      versions.forEach(function (v, i) {
+        var tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'version' + (i === currentIndex ? ' active' : '');
+        tile.dataset.index = String(i);
+        tile.setAttribute('aria-pressed', i === currentIndex ? 'true' : 'false');
+        var thumb = document.createElement('div');
+        thumb.className = 'thumb';
+        var tImg = document.createElement('img');
+        tImg.src = v.src;
+        tImg.alt = v.label;
+        thumb.appendChild(tImg);
+        if (v.pinned) {
+          var pin = document.createElement('span');
+          pin.className = 'pin';
+          pin.textContent = 'Orig';
+          thumb.appendChild(pin);
+        }
+        var label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = v.label;
+        tile.appendChild(thumb);
+        tile.appendChild(label);
+        versionsEl.appendChild(tile);
+      });
+      // Auto-scroll to the newest tile on the right.
+      versionsEl.scrollLeft = versionsEl.scrollWidth;
+    }
 
+    // Select an existing version as current (from a thumbnail click).
+    async function selectVersion(i) {
+      if (i < 0 || i >= versions.length || i === currentIndex) return;
+      currentIndex = i;
+      try {
+        await setCurrentImage(versions[i].src);
+        renderVersions();
+        setStatus(status, 'Editing ' + versions[i].label + '. Paint a region, then Regenerate.', false);
+      } catch (err) {
+        setStatus(status, err.message, true);
+      }
+    }
+
+    versionsEl.addEventListener('click', function (e) {
+      var tile = e.target.closest('.version');
+      if (!tile) return;
+      selectVersion(Number(tile.dataset.index));
+    });
+
+    // Start a FRESH history from a newly loaded image (upload / sample / Generate).
+    async function loadModifyImage(src) {
+      try {
+        // Normalize whatever we were given to a PNG dataURL for the history.
+        var img = await loadImageFromSrc(src);
+        var scaled = downscaleToCanvas(img, MAX_EDGE);
+        var url = scaled.canvas.toDataURL('image/png');
+        versions = [{ src: url, label: 'Original', pinned: true }];
+        currentIndex = 0;
+        await setCurrentImage(url);
+        renderVersions();
         setStatus(status, 'Paint the area to regenerate, then press Regenerate.', false);
       } catch (err) {
         setStatus(status, err.message, true);
@@ -434,45 +516,24 @@
       brushValue.textContent = brush.value;
     });
 
-    undoBtn.addEventListener('click', function () {
-      strokes.pop();
-      redraw();
-      updateMaskButtons();
-    });
-
     clearBtn.addEventListener('click', function () {
-      strokes = [];
-      currentStroke = null;
-      redraw();
-      updateMaskButtons();
+      clearMask();
       setStatus(status, 'Mask cleared. Paint again to regenerate.', false);
     });
 
-    // Source toggle (Upload / Sample)
-    sourceToggle.addEventListener('click', function (e) {
-      var btn = e.target.closest('button[data-source]');
-      if (!btn) return;
-      Array.prototype.forEach.call(sourceToggle.children, function (b) {
-        b.classList.toggle('active', b === btn);
-      });
-      if (btn.getAttribute('data-source') === 'upload') {
-        fileInput.click();
-      } else {
-        loadModifyImage(SAMPLES.modify);
-      }
-    });
+    // "Choose image…" / "or use a sample" links below the frame.
+    chooseBtn.addEventListener('click', function () { fileInput.click(); });
+    sampleBtn.addEventListener('click', function () { loadModifyImage(SAMPLES.modify); });
 
     fileInput.addEventListener('change', async function () {
       if (!fileInput.files || !fileInput.files[0]) return;
       var url = await fileToDataUrl(fileInput.files[0]);
       loadModifyImage(url);
+      fileInput.value = ''; // allow re-choosing the same file
     });
 
-    // Drop-to-load on the frame (only meaningful in the empty/drop state, but
-    // allowing a re-drop is harmless).
+    // Click-to-upload only in the empty state; once loaded, clicks paint.
     frame.addEventListener('click', function (e) {
-      // Clicking the empty placeholder opens the file picker; clicking once an
-      // image is loaded is for painting, so don't hijack that.
       if (!hasImage() && !e.target.closest('canvas')) fileInput.click();
     });
     frame.addEventListener('dragover', function (e) { e.preventDefault(); frame.classList.add('dragover'); });
@@ -484,10 +545,10 @@
       if (file) { var url = await fileToDataUrl(file); loadModifyImage(url); }
     });
 
-    // ---- run inpaint ----
+    // ---- run inpaint: result becomes a new version AND the current image ----
     runBtn.addEventListener('click', async function () {
       if (!hasImage()) { setStatus(status, 'Load an image first.', true); return; }
-      if (strokes.length === 0) { setStatus(status, 'Paint a region to regenerate first.', true); return; }
+      if (!painted) { setStatus(status, 'Paint a region to regenerate first.', true); return; }
       var text = promptEl.value.trim();
       if (!text) { setStatus(status, 'Enter a modify prompt first.', true); return; }
 
@@ -500,13 +561,17 @@
         var data = await postJson('/.netlify/functions/edit', {
           imageB64: imageB64, maskB64: maskB64, prompt: text
         });
+        // OpenAI (gpt-image-1 + input_fidelity:'high') returns the edited image
+        // with the unmasked area kept faithful — no browser compositing.
         var resultUrl = 'data:image/png;base64,' + data.image;
-        afterSlot.innerHTML = '';
-        var afterImg = document.createElement('img');
-        afterImg.src = resultUrl;
-        afterImg.alt = 'Result';
-        afterSlot.appendChild(afterImg);
-        setStatus(status, 'Done. Compare before / after below.', false);
+        // Append as a new version and make it current, KEEPING the mask so the same
+        // region can be regenerated again (re-roll / tweak the prompt) without
+        // re-painting. Clear mask stays available to start a new region.
+        versions.push({ src: resultUrl, label: 'v' + (versions.length + 1) });
+        currentIndex = versions.length - 1;
+        await setCurrentImage(resultUrl, true);
+        renderVersions();
+        setStatus(status, 'Done — now editing ' + versions[currentIndex].label + '. Mask kept; paint more or Clear mask.', false);
       } catch (err) {
         setStatus(status, err.message, true);
       } finally {
@@ -530,7 +595,8 @@
     var clearBtn = $('descClearBtn');
     var status = $('descStatus');
     var out = $('descOut');
-    var sourceToggle = $('descSource');
+    var chooseBtn = $('descChooseBtn');
+    var sampleBtn = $('descSampleBtn');
     var modeToggle = $('descMode');
     var progress = makeProgress($('descTrack'), $('descFill'));
 
@@ -567,20 +633,14 @@
       runBtn.textContent = (mode === 'ocr' ? 'Read text' : 'Describe') + ' →';
     });
 
-    sourceToggle.addEventListener('click', function (e) {
-      var btn = e.target.closest('button[data-source]');
-      if (!btn) return;
-      Array.prototype.forEach.call(sourceToggle.children, function (b) {
-        b.classList.toggle('active', b === btn);
-      });
-      if (btn.getAttribute('data-source') === 'upload') fileInput.click();
-      else loadDescribeImage(SAMPLES.describe);
-    });
+    chooseBtn.addEventListener('click', function () { fileInput.click(); });
+    sampleBtn.addEventListener('click', function () { loadDescribeImage(SAMPLES.describe); });
 
     fileInput.addEventListener('change', async function () {
       if (!fileInput.files || !fileInput.files[0]) return;
       var url = await fileToDataUrl(fileInput.files[0]);
       loadDescribeImage(url);
+      fileInput.value = ''; // allow re-choosing the same file
     });
 
     frame.addEventListener('click', function () { if (!sourceCanvas) fileInput.click(); });
