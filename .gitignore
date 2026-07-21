@@ -5,3 +5,8 @@ node_modules/
 deno.lock
 npm-debug.log*
 .DS_Store
+
+# package-lock.json is REQUIRED in-repo: Netlify only installs function deps
+# (sharp, @netlify/blobs) when a lockfile is present, and a global gitignore
+# commonly excludes it. This negation forces it to be tracked here.
+!package-lock.json
