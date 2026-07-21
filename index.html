@@ -67,7 +67,7 @@
     }
     .tabbar button:hover { color: var(--text); }
     .tabbar button.active { background: var(--accent); color: #06121f; }
-    .tabpane { display: none; }
+    .tabpane { display: none; min-height: 520px; }
     .tabpane.active { display: block; }
 
     /* Controls on the left, large output on the right. Stacks under 900px. */
@@ -140,7 +140,7 @@
     .status { min-height: 24px; color: var(--muted); font-size: 17px; margin-top: 16px; }
     .status.error { color: var(--danger); }
 
-    /* Source toggle (Edit / Describe tabs: Upload / Sample) */
+    /* Source toggle (Modify / Describe tabs: Upload / Sample) */
     .segmented {
       display: inline-flex; background: var(--panel-2);
       border: 1px solid var(--border); border-radius: 8px; padding: 2px; margin-bottom: 8px;
@@ -163,23 +163,35 @@
     .output-frame img, .output-frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
     .output-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
 
-    /* Edit canvas: base image + mask overlay, drawn on top. Crosshair while masking. */
-    .edit-frame {
+    /* Image frame: base image + mask overlay, drawn on top. Crosshair while masking.
+       (.frame is the family name; .drop = droppable empty state, .masking = image loaded) */
+    .frame {
       position: relative; width: 100%; aspect-ratio: 1 / 1;
-      border-radius: 14px; border: 1px dashed var(--border);
+      border-radius: 14px; border: 1px solid var(--border);
       overflow: hidden; background: var(--panel-2);
       display: flex; align-items: center; justify-content: center;
     }
-    .edit-frame.has-image { border-style: solid; cursor: crosshair; }
-    .edit-frame img, .edit-frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
-    .edit-frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-    .edit-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
-    .edit-placeholder strong { color: var(--text); }
+    .frame.drop { border-style: dashed; cursor: pointer; }
+    .frame.dragover { border-color: var(--accent); background: #26303f; }
+    .frame.masking { border-style: solid; cursor: crosshair; }
+    .frame img, .frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .frame-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
+    .frame-placeholder strong { color: var(--text); }
 
     /* Mask legend (magenta = area to regenerate) */
     .mask-legend { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin-top: 12px;
       text-transform: none; letter-spacing: 0; }
     .mask-legend .dot { width: 12px; height: 12px; border-radius: 4px; background: var(--nontop); opacity: 0.7; display: inline-block; }
+
+    /* Before / after compare (Modify tab) */
+    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .compare figure { margin: 0; }
+    .compare figcaption { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+    .compare figcaption.after { color: var(--chosen); }
+    .compare .frame { aspect-ratio: 1 / 1; }
+    .compare .frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    @media (max-width: 560px) { .compare { grid-template-columns: 1fr; } }
 
     /* Describe tab: text output panel */
     .describe-output {
@@ -206,14 +218,14 @@
     </p>
 
     <!-- Tab bar -->
-    <div class="tabbar" role="tablist">
-      <button class="active" data-tab="generate" role="tab">Generate</button>
-      <button data-tab="edit" role="tab">Modify</button>
-      <button data-tab="describe" role="tab">Describe</button>
+    <div class="tabbar" role="tablist" aria-label="Tools">
+      <button class="active" id="tab-btn-generate" data-tab="generate" role="tab" aria-selected="true" aria-controls="tab-generate">Generate</button>
+      <button id="tab-btn-modify" data-tab="modify" role="tab" aria-selected="false" aria-controls="tab-modify" tabindex="-1">Modify</button>
+      <button id="tab-btn-describe" data-tab="describe" role="tab" aria-selected="false" aria-controls="tab-describe" tabindex="-1">Describe</button>
     </div>
 
     <!-- ===================== TAB 1: GENERATE ===================== -->
-    <div class="tabpane active" id="tab-generate">
+    <div class="tabpane active" id="tab-generate" role="tabpanel" aria-labelledby="tab-btn-generate">
       <div class="layout">
         <!-- LEFT: controls -->
         <div class="controls-col">
@@ -223,11 +235,11 @@
 
             <div class="buttons">
               <button class="primary" id="genRunBtn">Generate &rarr;</button>
-              <button id="genCancelBtn" disabled>Cancel</button>
+              <button id="genClearBtn">Clear</button>
             </div>
 
             <div class="model-line" id="genModelLine">gpt-image-1-mini &middot; text-to-image</div>
-            <div class="track" id="genDlTrack" hidden><div class="fill" id="genDlFill" style="width: 0%"></div></div>
+            <div class="track" id="genTrack" hidden><div class="fill" id="genFill" style="width: 0%"></div></div>
             <div class="status" id="genStatus">Enter a prompt and press Generate.</div>
           </div>
         </div>
@@ -236,10 +248,10 @@
         <div class="output-col">
           <div class="output-frame">
             <div class="output-placeholder" id="genPlaceholder">Your generated image will appear here.</div>
-            <!-- generated image gets shown here -->
+            <!-- generated image <img id="genImage"> gets shown here -->
           </div>
           <div class="buttons" style="margin-top: 0">
-            <button id="genSendToEditBtn" disabled>Send to Modify &rarr;</button>
+            <button id="genSendToModifyBtn" disabled>Send to Modify &rarr;</button>
             <button id="genDownloadBtn" disabled>Download</button>
           </div>
         </div>
@@ -247,19 +259,19 @@
     </div>
 
     <!-- ===================== TAB 2: MODIFY (inpaint) ===================== -->
-    <div class="tabpane" id="tab-edit">
+    <div class="tabpane" id="tab-modify" role="tabpanel" aria-labelledby="tab-btn-modify">
       <div class="layout">
         <!-- LEFT: mask controls -->
         <div class="controls-col">
           <div class="panel">
-            <div class="segmented" id="editSource" role="group" aria-label="Source">
+            <div class="segmented" id="modSource" role="group" aria-label="Source">
               <button class="active" data-source="upload">Upload</button>
               <button data-source="sample">Sample</button>
             </div>
-            <input type="file" id="editFileInput" accept="image/*" />
+            <input type="file" id="modFileInput" accept="image/*" />
 
-            <label for="editPrompt" style="margin-top: 8px">Modify prompt</label>
-            <textarea id="editPrompt" spellcheck="false" placeholder="What should fill the masked area?"></textarea>
+            <label for="modPrompt" style="margin-top: 8px">Modify prompt</label>
+            <textarea id="modPrompt" spellcheck="false" placeholder="What should fill the masked area? e.g. add sunglasses"></textarea>
 
             <div class="metas">
               <div>
@@ -273,33 +285,46 @@
             </div>
 
             <div class="buttons">
-              <button class="primary" id="inpaintBtn" disabled>Regenerate masked &rarr;</button>
-              <button id="clearMaskBtn" disabled>Clear mask</button>
+              <button class="primary" id="modRunBtn" disabled>Regenerate masked &rarr;</button>
+              <button id="modUndoBtn" disabled>Undo</button>
+              <button id="modClearMaskBtn" disabled>Clear mask</button>
             </div>
 
             <div class="mask-legend"><span class="dot"></span>Painted area will be regenerated</div>
 
-            <div class="model-line" id="editModelLine">gpt-image-1-mini &middot; masked edit (inpaint)</div>
-            <div class="track" id="editDlTrack" hidden><div class="fill" id="editDlFill" style="width: 0%"></div></div>
-            <div class="status" id="editStatus">Load an image, then paint the area to regenerate.</div>
+            <div class="model-line" id="modModelLine">gpt-image-1-mini &middot; masked edit (inpaint)</div>
+            <div class="track" id="modTrack" hidden><div class="fill" id="modFill" style="width: 0%"></div></div>
+            <div class="status" id="modStatus">Load an image, then paint the area to regenerate.</div>
           </div>
         </div>
 
         <!-- RIGHT: image + mask canvas -->
         <div class="output-col">
-          <div class="edit-frame" id="editFrame">
-            <div class="edit-placeholder" id="editPlaceholder">
+          <div class="frame drop" id="modFrame">
+            <div class="frame-placeholder" id="modPlaceholder">
               <strong>Load an image to edit</strong><br />upload one, pick a sample, or send one from Generate
             </div>
-            <!-- base image (id editImage) below; mask canvas (id maskCanvas) painted on top -->
+            <!-- base image <img id="modImage"> below; mask canvas #maskCanvas painted on top -->
             <canvas class="mask" id="maskCanvas"></canvas>
+          </div>
+
+          <p class="section-label" style="margin-top: 22px">Before / after</p>
+          <div class="compare">
+            <figure>
+              <figcaption>Original</figcaption>
+              <div class="frame"><div class="frame-placeholder" id="modBeforeSlot">&mdash;</div></div>
+            </figure>
+            <figure>
+              <figcaption class="after">Result</figcaption>
+              <div class="frame"><div class="frame-placeholder" id="modAfterSlot">&mdash;</div></div>
+            </figure>
           </div>
         </div>
       </div>
     </div>
 
     <!-- ===================== TAB 3: DESCRIBE (image-to-text) ===================== -->
-    <div class="tabpane" id="tab-describe">
+    <div class="tabpane" id="tab-describe" role="tabpanel" aria-labelledby="tab-btn-describe">
       <div class="layout">
         <!-- LEFT: image picker -->
         <div class="controls-col">
@@ -316,27 +341,27 @@
             </div>
             <input type="file" id="descFileInput" accept="image/*" />
 
-            <div class="edit-frame" id="descFrame" style="margin-top: 8px">
-              <div class="edit-placeholder" id="descPlaceholder">
+            <div class="frame drop" id="descFrame" style="margin-top: 8px">
+              <div class="frame-placeholder" id="descPlaceholder">
                 <strong>Load an image to describe</strong><br />upload one or pick a sample
               </div>
-              <!-- base image (id descImage) shown here -->
+              <!-- base image <img id="descImage"> shown here -->
             </div>
 
             <div class="buttons">
-              <button class="primary" id="describeBtn" disabled>Describe &rarr;</button>
+              <button class="primary" id="descRunBtn" disabled>Describe &rarr;</button>
               <button id="descClearBtn" disabled>Clear</button>
             </div>
 
             <div class="model-line" id="descModelLine">gpt-4o-mini &middot; image-to-text (vision)</div>
-            <div class="track" id="descDlTrack" hidden><div class="fill" id="descDlFill" style="width: 0%"></div></div>
+            <div class="track" id="descTrack" hidden><div class="fill" id="descFill" style="width: 0%"></div></div>
             <div class="status" id="descStatus">Load an image, then press Describe.</div>
           </div>
         </div>
 
         <!-- RIGHT: text output -->
         <div class="output-col">
-          <div class="describe-output empty" id="descOutput">The model's description will appear here.</div>
+          <div class="describe-output empty" id="descOut">The model's description will appear here.</div>
         </div>
       </div>
     </div>
@@ -346,50 +371,6 @@
     </p>
   </div>
 
-  <!-- app.js loads here (swappable stack).
-       script src app.js
-
-       ===== STABLE HOOKS =====
-       Tabs: .tabbar button[data-tab] · .tabpane#tab-generate / #tab-edit / #tab-describe
-
-       GENERATE (text-to-image, OpenAI images.generate):
-         prompt #genPrompt · run/cancel #genRunBtn/#genCancelBtn
-         model line #genModelLine · progress #genDlTrack/#genDlFill · status #genStatus
-         output placeholder #genPlaceholder · send-to-modify #genSendToEditBtn · download #genDownloadBtn
-
-       MODIFY (inpaint, OpenAI images.edit):
-         source #editSource button[data-source] · file #editFileInput · prompt #editPrompt
-         brush #brushSize/#brushSizeValue (magenta readout)
-         run #inpaintBtn · clear #clearMaskBtn · model line #editModelLine
-         progress #editDlTrack/#editDlFill · status #editStatus
-         frame #editFrame (add .has-image once loaded) · base image #editImage · mask #maskCanvas
-
-       DESCRIBE (image-to-text, OpenAI gpt-4o-mini vision chat):
-         mode toggle #descMode button[data-mode] (describe | ocr) - only changes the prompt sent:
-             describe -> "Describe this image in a sentence or two."
-             ocr      -> "Transcribe all text visible in this image. If there's no text, say so."
-         source #descSource button[data-source] · file #descFileInput
-         frame #descFrame · base image #descImage · placeholder #descPlaceholder
-         run #describeBtn · clear #descClearBtn · model line #descModelLine
-         progress #descDlTrack/#descDlFill · status #descStatus
-         text output #descOutput (remove .empty class once populated)
-
-       WIRING:
-         Tabs - one handler toggling .active on .tabbar button + matching .tabpane.
-         Brush - size #maskCanvas to the image's natural px; on pointer drag, stroke in
-                 rgba(224,108,255,0.5) (var(--nontop) @ .5) with lineWidth = brushSize; convert the
-                 painted (opaque) region -> the OpenAI mask PNG where painted = alpha 0 ("edit here").
-                 Clear = clearRect the whole canvas.
-         Client downscale - before upload (Modify + the mask), draw the chosen image onto a canvas at a
-                 FIXED 768px longest edge, toBlob PNG; generate the mask at the same reduced dims.
-         Progress bar - dlTrack.hidden=false; dlFill.style.width = pct+'%' (indeterminate ok - the OpenAI
-                 request is a single POST; animate to ~90% while awaiting, 100% on response).
-         Errors - status.classList.add('error'); status.textContent = '...'.
-
-       All OpenAI calls go through a Netlify function (netlify/functions/*.mjs) with OPENAI_API_KEY
-       hidden in Netlify env - never in the browser. Function hard-codes the model, caps output size
-       at 1024x1024, n:1, truncates the prompt, and rejects oversized/wrong-dimension inputs early.
-       TODO (Adam, at deploy): (1) OpenAI project key MONTHLY SPEND CAP; (2) Netlify per-IP RATE LIMITING.
-  -->
+  <script src="app.js"></script>
 </body>
 </html>

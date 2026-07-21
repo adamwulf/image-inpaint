@@ -1,0 +1,13 @@
+# Netlify config — serves index.html at the repo root and the three functions
+# under /.netlify/functions/*. `netlify dev` uses this to run everything locally.
+
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[functions]
+  # .mjs uses ES modules; node_bundler esbuild bundles the openai dependency.
+  node_bundler = "esbuild"
+
+[dev]
+  publish = "."
