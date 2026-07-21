@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Image Generation &amp; Editor</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1e27;
+      --panel-2: #232936;
+      --text: #f2f5fa;
+      --muted: #9aa5b8;
+      --accent: #4da3ff;
+      --chosen: #ffd166;
+      --nontop: #e06cff;
+      --bar-bg: #2b3242;
+      --border: #2e3646;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 20px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 32px 28px 70px; }
+
+    h1 { font-size: 40px; margin: 0 0 4px; letter-spacing: -0.5px; }
+    .subtitle { color: var(--muted); font-size: 20px; margin: 0 0 26px; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 22px;
+    }
+
+    /* Eyebrow / section labels */
+    label, .section-label {
+      display: block;
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    /* ---- Tab bar: segmented pill ---- */
+    .tabbar {
+      display: inline-flex;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 3px;
+      gap: 2px;
+      margin-bottom: 24px;
+    }
+    .tabbar button {
+      font-size: 17px; font-weight: 600; font-family: inherit; color: var(--muted);
+      background: transparent; border: none; border-radius: 8px; padding: 10px 20px; cursor: pointer; white-space: nowrap;
+    }
+    .tabbar button:hover { color: var(--text); }
+    .tabbar button.active { background: var(--accent); color: #06121f; }
+    .tabpane { display: none; }
+    .tabpane.active { display: block; }
+
+    /* Controls on the left, large output on the right. Stacks under 900px. */
+    .layout { display: grid; grid-template-columns: minmax(380px, 41%) 1fr; gap: 26px; align-items: start; }
+    .output-col { position: sticky; top: 20px; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .output-col { position: static; }
+    }
+
+    /* Inputs */
+    textarea, input[type="text"], input[type="number"], select {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 18px;
+      font-family: inherit;
+    }
+    textarea { min-height: 96px; resize: vertical; font-size: 22px; line-height: 1.4; }
+    input[type="text"], input[type="number"] { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    /* Buttons */
+    .buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+    button {
+      font-size: 20px; font-weight: 600; font-family: inherit;
+      padding: 14px 22px; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--panel-2); color: var(--text); cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #2c3444; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; }
+    button.primary:hover:not(:disabled) { background: #6bb4ff; }
+    button.danger { background: var(--danger); border-color: var(--danger); color: #180606; }
+    button.danger:hover:not(:disabled) { background: #ff8585; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Seed row: field + randomize */
+    .seed-row { display: flex; gap: 10px; align-items: flex-end; margin-top: 20px; }
+    .seed-row .seed-field { flex: 1; }
+    .seed-row button { padding: 12px 16px; font-size: 16px; }
+
+    /* Sliders with gold readouts */
+    .metas { display: grid; gap: 22px; margin-top: 20px; }
+    .meta-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .meta-head label { margin-bottom: 4px; }
+    .meta-value { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 700; color: var(--chosen); }
+    input[type="range"] { width: 100%; accent-color: var(--accent); height: 28px; }
+    .meta-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-top: -4px; }
+
+    /* Brush-size slider reads magenta to echo the mask color */
+    .meta-value.mask { color: var(--nontop); }
+
+    /* Model line + download + status */
+    .model-line {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 15px; color: var(--muted);
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px; line-height: 1.5; margin-top: 16px;
+    }
+    .track { background: var(--bar-bg); border-radius: 8px; height: 34px; overflow: hidden; margin-top: 10px; }
+    .track[hidden] { display: none; }
+    .fill {
+      height: 100%; border-radius: 8px 0 0 8px;
+      background: linear-gradient(90deg, #3a72c9, var(--accent));
+      transition: width 0.35s ease; min-width: 2px;
+    }
+    .status { min-height: 24px; color: var(--muted); font-size: 17px; margin-top: 16px; }
+    .status.error { color: var(--danger); }
+
+    /* Source toggle (Edit / Describe tabs: Upload / Sample) */
+    .segmented {
+      display: inline-flex; background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 8px; padding: 2px; margin-bottom: 8px;
+    }
+    .segmented button {
+      font-size: 15px; font-family: inherit; color: var(--muted);
+      background: transparent; border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer;
+    }
+    .segmented button:hover { color: var(--text); background: transparent; }
+    .segmented button.active { background: var(--accent); color: #06121f; }
+    input[type="file"] { display: none; }
+
+    /* Output / canvas square frame (Generate) */
+    .output-frame {
+      position: relative; width: 100%; aspect-ratio: 1 / 1;
+      border-radius: 14px; border: 1px solid var(--border);
+      overflow: hidden; background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .output-frame img, .output-frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .output-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
+
+    /* Edit canvas: base image + mask overlay, drawn on top. Crosshair while masking. */
+    .edit-frame {
+      position: relative; width: 100%; aspect-ratio: 1 / 1;
+      border-radius: 14px; border: 1px dashed var(--border);
+      overflow: hidden; background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .edit-frame.has-image { border-style: solid; cursor: crosshair; }
+    .edit-frame img, .edit-frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .edit-frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .edit-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
+    .edit-placeholder strong { color: var(--text); }
+
+    /* Mask legend (magenta = area to regenerate) */
+    .mask-legend { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin-top: 12px;
+      text-transform: none; letter-spacing: 0; }
+    .mask-legend .dot { width: 12px; height: 12px; border-radius: 4px; background: var(--nontop); opacity: 0.7; display: inline-block; }
+
+    /* Describe tab: text output panel */
+    .describe-output {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 14px;
+      padding: 22px 24px; min-height: 220px; font-size: 20px; line-height: 1.55; color: var(--text);
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .describe-output.empty { color: var(--muted); display: flex; align-items: center; justify-content: center; text-align: center; }
+
+    /* Footer */
+    .footnote { margin-top: 30px; color: var(--muted); font-size: 15px; line-height: 1.6; }
+    .footnote code { background: var(--panel-2); padding: 2px 6px; border-radius: 5px; font-size: 14px; }
+    .footnote a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+    .footnote a:hover { color: var(--accent); }
+    .repo-link { margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Image Generation &amp; Editor</h1>
+    <p class="subtitle">
+      Generate an image from a prompt, mask a region and regenerate just that
+      part, or ask the model to describe an image in words.
+    </p>
+
+    <!-- Tab bar -->
+    <div class="tabbar" role="tablist">
+      <button class="active" data-tab="generate" role="tab">Generate</button>
+      <button data-tab="edit" role="tab">Modify</button>
+      <button data-tab="describe" role="tab">Describe</button>
+    </div>
+
+    <!-- ===================== TAB 1: GENERATE ===================== -->
+    <div class="tabpane active" id="tab-generate">
+      <div class="layout">
+        <!-- LEFT: controls -->
+        <div class="controls-col">
+          <div class="panel">
+            <label for="genPrompt">Prompt</label>
+            <textarea id="genPrompt" spellcheck="false" placeholder="A lighthouse at dusk, watercolor..."></textarea>
+
+            <div class="buttons">
+              <button class="primary" id="genRunBtn">Generate &rarr;</button>
+              <button id="genCancelBtn" disabled>Cancel</button>
+            </div>
+
+            <div class="model-line" id="genModelLine">gpt-image-1-mini &middot; text-to-image</div>
+            <div class="track" id="genDlTrack" hidden><div class="fill" id="genDlFill" style="width: 0%"></div></div>
+            <div class="status" id="genStatus">Enter a prompt and press Generate.</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: output -->
+        <div class="output-col">
+          <div class="output-frame">
+            <div class="output-placeholder" id="genPlaceholder">Your generated image will appear here.</div>
+            <!-- generated image gets shown here -->
+          </div>
+          <div class="buttons" style="margin-top: 0">
+            <button id="genSendToEditBtn" disabled>Send to Modify &rarr;</button>
+            <button id="genDownloadBtn" disabled>Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== TAB 2: MODIFY (inpaint) ===================== -->
+    <div class="tabpane" id="tab-edit">
+      <div class="layout">
+        <!-- LEFT: mask controls -->
+        <div class="controls-col">
+          <div class="panel">
+            <div class="segmented" id="editSource" role="group" aria-label="Source">
+              <button class="active" data-source="upload">Upload</button>
+              <button data-source="sample">Sample</button>
+            </div>
+            <input type="file" id="editFileInput" accept="image/*" />
+
+            <label for="editPrompt" style="margin-top: 8px">Modify prompt</label>
+            <textarea id="editPrompt" spellcheck="false" placeholder="What should fill the masked area?"></textarea>
+
+            <div class="metas">
+              <div>
+                <div class="meta-head">
+                  <label for="brushSize" style="margin-bottom: 4px">Brush size</label>
+                  <span class="meta-value mask" id="brushSizeValue">40</span>
+                </div>
+                <input type="range" id="brushSize" min="5" max="120" step="1" value="40" />
+                <div class="meta-scale"><span>5 &middot; fine</span><span>120 &middot; broad</span></div>
+              </div>
+            </div>
+
+            <div class="buttons">
+              <button class="primary" id="inpaintBtn" disabled>Regenerate masked &rarr;</button>
+              <button id="clearMaskBtn" disabled>Clear mask</button>
+            </div>
+
+            <div class="mask-legend"><span class="dot"></span>Painted area will be regenerated</div>
+
+            <div class="model-line" id="editModelLine">gpt-image-1-mini &middot; masked edit (inpaint)</div>
+            <div class="track" id="editDlTrack" hidden><div class="fill" id="editDlFill" style="width: 0%"></div></div>
+            <div class="status" id="editStatus">Load an image, then paint the area to regenerate.</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: image + mask canvas -->
+        <div class="output-col">
+          <div class="edit-frame" id="editFrame">
+            <div class="edit-placeholder" id="editPlaceholder">
+              <strong>Load an image to edit</strong><br />upload one, pick a sample, or send one from Generate
+            </div>
+            <!-- base image (id editImage) below; mask canvas (id maskCanvas) painted on top -->
+            <canvas class="mask" id="maskCanvas"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== TAB 3: DESCRIBE (image-to-text) ===================== -->
+    <div class="tabpane" id="tab-describe">
+      <div class="layout">
+        <!-- LEFT: image picker -->
+        <div class="controls-col">
+          <div class="panel">
+            <label style="margin-bottom: 6px">Task</label>
+            <div class="segmented" id="descMode" role="group" aria-label="Task" style="margin-bottom: 16px">
+              <button class="active" data-mode="describe">Describe</button>
+              <button data-mode="ocr">Read text</button>
+            </div>
+
+            <div class="segmented" id="descSource" role="group" aria-label="Source">
+              <button class="active" data-source="upload">Upload</button>
+              <button data-source="sample">Sample</button>
+            </div>
+            <input type="file" id="descFileInput" accept="image/*" />
+
+            <div class="edit-frame" id="descFrame" style="margin-top: 8px">
+              <div class="edit-placeholder" id="descPlaceholder">
+                <strong>Load an image to describe</strong><br />upload one or pick a sample
+              </div>
+              <!-- base image (id descImage) shown here -->
+            </div>
+
+            <div class="buttons">
+              <button class="primary" id="describeBtn" disabled>Describe &rarr;</button>
+              <button id="descClearBtn" disabled>Clear</button>
+            </div>
+
+            <div class="model-line" id="descModelLine">gpt-4o-mini &middot; image-to-text (vision)</div>
+            <div class="track" id="descDlTrack" hidden><div class="fill" id="descDlFill" style="width: 0%"></div></div>
+            <div class="status" id="descStatus">Load an image, then press Describe.</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: text output -->
+        <div class="output-col">
+          <div class="describe-output empty" id="descOutput">The model's description will appear here.</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="footnote repo-link">
+      Source on <a href="https://github.com/adamwulf/image-inpaint" target="_blank" rel="noopener">GitHub</a>.
+    </p>
+  </div>
+
+  <!-- app.js loads here (swappable stack).
+       script src app.js
+
+       ===== STABLE HOOKS =====
+       Tabs: .tabbar button[data-tab] · .tabpane#tab-generate / #tab-edit / #tab-describe
+
+       GENERATE (text-to-image, OpenAI images.generate):
+         prompt #genPrompt · run/cancel #genRunBtn/#genCancelBtn
+         model line #genModelLine · progress #genDlTrack/#genDlFill · status #genStatus
+         output placeholder #genPlaceholder · send-to-modify #genSendToEditBtn · download #genDownloadBtn
+
+       MODIFY (inpaint, OpenAI images.edit):
+         source #editSource button[data-source] · file #editFileInput · prompt #editPrompt
+         brush #brushSize/#brushSizeValue (magenta readout)
+         run #inpaintBtn · clear #clearMaskBtn · model line #editModelLine
+         progress #editDlTrack/#editDlFill · status #editStatus
+         frame #editFrame (add .has-image once loaded) · base image #editImage · mask #maskCanvas
+
+       DESCRIBE (image-to-text, OpenAI gpt-4o-mini vision chat):
+         mode toggle #descMode button[data-mode] (describe | ocr) - only changes the prompt sent:
+             describe -> "Describe this image in a sentence or two."
+             ocr      -> "Transcribe all text visible in this image. If there's no text, say so."
+         source #descSource button[data-source] · file #descFileInput
+         frame #descFrame · base image #descImage · placeholder #descPlaceholder
+         run #describeBtn · clear #descClearBtn · model line #descModelLine
+         progress #descDlTrack/#descDlFill · status #descStatus
+         text output #descOutput (remove .empty class once populated)
+
+       WIRING:
+         Tabs - one handler toggling .active on .tabbar button + matching .tabpane.
+         Brush - size #maskCanvas to the image's natural px; on pointer drag, stroke in
+                 rgba(224,108,255,0.5) (var(--nontop) @ .5) with lineWidth = brushSize; convert the
+                 painted (opaque) region -> the OpenAI mask PNG where painted = alpha 0 ("edit here").
+                 Clear = clearRect the whole canvas.
+         Client downscale - before upload (Modify + the mask), draw the chosen image onto a canvas at a
+                 FIXED 768px longest edge, toBlob PNG; generate the mask at the same reduced dims.
+         Progress bar - dlTrack.hidden=false; dlFill.style.width = pct+'%' (indeterminate ok - the OpenAI
+                 request is a single POST; animate to ~90% while awaiting, 100% on response).
+         Errors - status.classList.add('error'); status.textContent = '...'.
+
+       All OpenAI calls go through a Netlify function (netlify/functions/*.mjs) with OPENAI_API_KEY
+       hidden in Netlify env - never in the browser. Function hard-codes the model, caps output size
+       at 1024x1024, n:1, truncates the prompt, and rejects oversized/wrong-dimension inputs early.
+       TODO (Adam, at deploy): (1) OpenAI project key MONTHLY SPEND CAP; (2) Netlify per-IP RATE LIMITING.
+  -->
+</body>
+</html>
