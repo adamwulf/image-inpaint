@@ -179,6 +179,14 @@
     return data;
   }
 
+  // Thrown when the user cancels an in-flight edit. The caller checks `err.cancelled`
+  // to treat it as a quiet no-op (restore the UI) rather than surfacing an error.
+  function CancelledError() {
+    var e = new Error('cancelled');
+    e.cancelled = true;
+    return e;
+  }
+
   // Submit a slow edit, then poll for its result. The heavy payload (base64 image + mask)
   // goes to the SYNCHRONOUS edit-submit function: background functions cap the request body
   // at 256 KB, far under a ~1.4 MB image, so posting the image straight to edit-background
@@ -186,13 +194,30 @@
   // (6 MB limit) stashes the payload in Blobs and triggers edit-background with just the
   // jobId; edit-background does the ~25s work and stashes {status,image,raw|error} in Blobs
   // under the job id; edit-status returns it. Resolves with { image, raw? } or throws.
-  async function submitEdit(body, onProgress) {
+  //
+  // opts.signal (an AbortSignal) makes the edit CANCELLABLE: aborting it stops the poll
+  // loop, fires a best-effort edit-cancel so the background job bails early (and cleans up
+  // its own blobs), and rejects with a CancelledError the caller treats as a quiet no-op.
+  async function submitEdit(body, onProgress, opts) {
+    var signal = opts && opts.signal;
+    // If already aborted before we even start, don't fire the request.
+    if (signal && signal.aborted) throw CancelledError();
     var jobId = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-    var res = await fetch('/.netlify/functions/edit-submit', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(Object.assign({ jobId: jobId }, body))
-    });
+    var res;
+    try {
+      res = await fetch('/.netlify/functions/edit-submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(Object.assign({ jobId: jobId }, body)),
+        signal: signal
+      });
+    } catch (e) {
+      // An abort during the submit itself throws a native AbortError (a DOMException, not
+      // our CancelledError). Convert it: cancel the (possibly not-yet-created) job and
+      // report it as a user cancel; re-throw anything else (a real network failure).
+      if (signal && signal.aborted) throw cancelJob(jobId);
+      throw e;
+    }
     // edit-submit returns 202 Accepted once the background job is triggered.
     if (res.status !== 202 && res.status !== 200) {
       throw new Error('Could not start the edit (' + res.status + ').');
@@ -206,7 +231,9 @@
     var deadline = start + 300000;
     var SLOW_AFTER = 150000;
     while (Date.now() < deadline) {
+      if (signal && signal.aborted) throw cancelJob(jobId);
       await new Promise(function (r) { setTimeout(r, 1000); });
+      if (signal && signal.aborted) throw cancelJob(jobId);
       // Fetch and parse are separated on purpose: a network hiccup OR a body that
       // fails to parse after a 200 (truncated response, backgrounded tab) must NOT
       // discard a finished result. Because edit-status no longer deletes on read, the
@@ -214,8 +241,11 @@
       // ack AFTER a successful parse below.
       var sres;
       try {
-        sres = await fetch(statusUrl);
-      } catch (e) { continue; } // transient network error — keep polling
+        sres = await fetch(statusUrl, { signal: signal });
+      } catch (e) {
+        if (signal && signal.aborted) throw cancelJob(jobId);
+        continue; // transient network error — keep polling
+      }
       var s;
       try {
         s = await sres.json();
@@ -229,6 +259,17 @@
       if (onProgress) onProgress({ slow: Date.now() - start >= SLOW_AFTER });
     }
     throw new Error('That took too long and timed out. Try again, or paint a smaller region / shorter prompt.');
+  }
+
+  // Tell the server to cancel a still-running background job, then return a CancelledError
+  // for the poll loop to throw. edit-cancel writes a cancel flag the background function
+  // checks (before/around the OpenAI call) so it bails early and cleans up its own blobs;
+  // this is best-effort (a job already past its OpenAI call just finishes normally, and the
+  // client ignores the result since it has already stopped polling).
+  function cancelJob(jobId) {
+    fetch('/.netlify/functions/edit-cancel?id=' + encodeURIComponent(jobId), { method: 'POST' })
+      .catch(function () {}); // best-effort — client stops regardless
+    return CancelledError();
   }
 
   /* Sample image. dog.png is a real Unsplash photo (Alvan Nee, Unsplash License,
@@ -328,6 +369,7 @@
     var brush = $('brushSize');
     var brushValue = $('brushSizeValue');
     var runBtn = $('modRunBtn');
+    var cancelBtn = $('modCancelBtn');
     var clearBtn = $('modClearMaskBtn');
     var status = $('modStatus');
     var chooseBtn = $('modChooseBtn');
@@ -345,6 +387,11 @@
     var maskCtx = maskCanvas.getContext('2d');
     var painted = false;       // has anything been painted onto the mask?
     var painting = false;
+    // While an edit is in flight the mask/version UI is LOCKED so the submitted mask can't
+    // be changed out from under the running job (which would produce a mismatched result).
+    // `editAbort` is the AbortController for the current edit; Cancel aborts it.
+    var editing = false;
+    var editAbort = null;
 
     // Iterative version history: v1 = the loaded original, then each result.
     // Clicking a thumbnail makes that version current so it can be edited further.
@@ -396,7 +443,7 @@
     }
 
     function startPaint(e) {
-      if (!hasImage()) return;
+      if (!hasImage() || editing) return; // mask is locked while an edit is in flight
       e.preventDefault();
       painting = true;
       lastPt = null;
@@ -432,8 +479,22 @@
     function updateMaskButtons() {
       // Regenerate works with OR without a mask: with a mask it's a masked edit
       // (composited), without one the AI rebuilds the whole image from the prompt.
-      runBtn.disabled = !hasImage();
-      clearBtn.disabled = !painted;
+      // While an edit is in flight everything mask-related is locked (see setEditing).
+      runBtn.disabled = editing || !hasImage();
+      clearBtn.disabled = editing || !painted;
+    }
+
+    // Lock/unlock the mask + version UI around an in-flight edit. Locking keeps the
+    // SUBMITTED mask fixed (no painting, no Clear, no switching versions/views) so the
+    // running job's result always matches the mask it was given. Swaps Regenerate for a
+    // Cancel button; the caller owns editAbort (Cancel aborts it).
+    function setEditing(on) {
+      editing = on;
+      cancelBtn.hidden = !on;
+      if (on) cancelBtn.disabled = false; // re-arm Cancel each time we enter editing
+      runBtn.hidden = on;
+      maskCanvas.classList.toggle('locked', on); // CSS: not-allowed cursor while locked
+      updateMaskButtons();
     }
 
     // Re-assert the mask canvas backing store to the current image's px dims.
@@ -564,6 +625,7 @@
     // Select an existing version as current (from a thumbnail click). Keep the
     // painted mask (preserveMask=true) — it only clears on "Clear mask".
     async function selectVersion(i) {
+      if (editing) return; // version switching is locked while an edit is in flight
       if (i < 0 || i >= versions.length || i === currentIndex) return;
       currentIndex = i;
       try {
@@ -637,6 +699,7 @@
     // the ACTIVE image: it loads into the editor as the base (keeping the mask), so
     // the next Regenerate / Download / "Use in Describe" all act on it.
     viewToggle.addEventListener('click', async function (e) {
+      if (editing) return; // Result/Raw switching is locked while an edit is in flight
       var btn = e.target.closest('button[data-view]');
       if (!btn) return;
       var mode = btn.getAttribute('data-view');
@@ -692,12 +755,15 @@
     // ---- run: with a mask it's a masked edit (composited); without a mask the AI
     // rebuilds the whole image. Either way the result becomes a new current version.
     runBtn.addEventListener('click', async function () {
+      if (editing) return; // ignore double-clicks while an edit is already running
       if (!hasImage()) { setStatus(status, 'Load an image first.', true); return; }
       var text = promptEl.value.trim();
       if (!text) { setStatus(status, 'Enter a prompt first.', true); return; }
       var masked = painted;
 
-      runBtn.disabled = true;
+      // Enter the editing state: lock the mask/version UI and swap Regenerate for Cancel.
+      editAbort = new AbortController();
+      setEditing(true);
       setStatus(status, masked ? 'Regenerating masked region…' : 'Regenerating the whole image…', false);
       progress.start();
       try {
@@ -706,12 +772,13 @@
         if (masked) body.maskB64 = exportMaskBase64();
         // The edit is slow (~25s), so it runs as a background function: submit, then
         // poll for the result. status updates keep the user informed while awaiting.
+        // The abort signal lets Cancel stop the poll (and bail the server job).
         var data = await submitEdit(body, function (p) {
           var base = masked ? 'Regenerating masked region' : 'Regenerating the whole image';
           setStatus(status, base + (p && p.slow
             ? '… still working, this one is taking longer than usual — hang tight'
             : '… still working'), false);
-        });
+        }, { signal: editAbort.signal });
         // Masked edits return `image` = the feathered composite (only the masked region
         // changed) plus `raw` = the whole canvas the model regenerated. A no-mask rebuild
         // returns just `image` (there's nothing to composite / no "raw vs result").
@@ -726,11 +793,30 @@
         setStatus(status, 'Done — now editing ' + versions[currentIndex].label +
           (masked ? '. Mask kept; paint more or Clear mask.' : '.'), false);
       } catch (err) {
-        setStatus(status, err.message, true);
+        // A user cancel is a quiet no-op: the mask/version state is untouched, so just
+        // report it and let the finally clause restore the UI. Everything else is a real
+        // error worth surfacing.
+        if (err && err.cancelled) {
+          setStatus(status, 'Canceled. Your mask is unchanged — edit it and Regenerate again.', false);
+        } else {
+          setStatus(status, err.message, true);
+        }
       } finally {
+        editAbort = null;
         progress.done();
-        runBtn.disabled = false;
+        setEditing(false); // unlock the mask/version UI and restore Regenerate
       }
+    });
+
+    // Cancel an in-flight edit: abort the poll (submitEdit throws CancelledError and also
+    // fires edit-cancel so the background job bails). The run handler's finally restores
+    // the UI. The submitted mask is never touched, so the user resumes exactly where they
+    // were. Disable Cancel immediately so a double-click can't fire against a stale signal.
+    cancelBtn.addEventListener('click', function () {
+      if (!editAbort) return;
+      cancelBtn.disabled = true;
+      setStatus(status, 'Canceling…', false);
+      editAbort.abort();
     });
 
     // Keep the mask backing store correct if the window resizes while visible.

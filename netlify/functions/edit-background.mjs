@@ -77,6 +77,14 @@ export default async (req) => {
       return finish(store, jobId, { status: 'error', error: 'image/mask too large (max 4MB each)' });
     }
 
+    // Cancellation point #1 — BEFORE the OpenAI call. This is the one that saves money:
+    // if the user cancelled while this job sat in Netlify's queue / cold-started, we bail
+    // here and never spend on the edit. Bailing writes no result (client isn't polling).
+    if (await isCancelled(store, jobId)) {
+      console.log(`[edit-timing] jobId=%s cancelled-before-openai`, jobId);
+      return finishCancelled(store, jobId);
+    }
+
     const form = new FormData();
     form.append('model', 'gpt-image-2');
     form.append('image', new Blob([imageBuf], { type: 'image/png' }), 'image.png');
@@ -101,6 +109,15 @@ export default async (req) => {
     const rawB64 = data.data[0]?.b64_json;
     if (!rawB64) return finish(store, jobId, { status: 'error', error: 'no image returned' });
 
+    // Cancellation point #2 — AFTER OpenAI, before the composite. The spend already
+    // happened, but the user isn't waiting for this result, so skip the ~couple-second
+    // composite and write nothing. (The client stopped polling on cancel; a result blob
+    // here would only linger unread.)
+    if (await isCancelled(store, jobId)) {
+      console.log(`[edit-timing] jobId=%s cancelled-after-openai`, jobId);
+      return finishCancelled(store, jobId);
+    }
+
     if (!maskBuf) {
       // No mask: the whole-image rebuild IS the result — nothing to composite.
       return finish(store, jobId, { status: 'done', image: rawB64 });
@@ -118,10 +135,28 @@ export default async (req) => {
 
 // Write the finished job to the blob store (the browser polls edit-status for it), then
 // drop the now-consumed input blob. Order matters: write the result FIRST so a failure
-// deleting the (large) input never loses the result the user paid for.
+// deleting the (large) input never loses the result the user paid for. Also drop any
+// cancel flag so it never lingers past the job it belonged to.
 async function finish(store, jobId, result) {
   await store.setJSON(jobId, result);
   try { await store.delete(`input:${jobId}`); } catch (_) { /* best effort */ }
+  try { await store.delete(`cancel:${jobId}`); } catch (_) { /* best effort */ }
+}
+
+// True if the browser posted a cancel flag for this job (see edit-cancel.mjs). Checked at
+// this function's cancellation points so a cancelled job bails early. Read failures are
+// swallowed as "not cancelled" — a missed cancel just finishes the job normally, and the
+// client (which has stopped polling) ignores the result.
+async function isCancelled(store, jobId) {
+  try { return !!(await store.get(`cancel:${jobId}`, { type: 'json' })); }
+  catch (_) { return false; }
+}
+
+// A job that bails on cancel writes NO result blob (the client isn't polling for one) —
+// it only cleans up the input + cancel-flag blobs so nothing lingers.
+async function finishCancelled(store, jobId) {
+  try { await store.delete(`input:${jobId}`); } catch (_) { /* best effort */ }
+  try { await store.delete(`cancel:${jobId}`); } catch (_) { /* best effort */ }
 }
 
 // Blend: out = source*(1-t) + aiResult*t, where t is a FEATHERED edit-strength map from

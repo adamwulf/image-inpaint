@@ -179,6 +179,9 @@
        and the whole layer is made translucent here — a single even 50% overlay
        you can always see through. */
     .frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.5; }
+    /* While an edit is in flight the mask is locked: no painting, so signal it with a
+       not-allowed cursor (overrides the frame's crosshair since the canvas sits on top). */
+    .frame canvas.mask.locked { cursor: not-allowed; }
     .frame-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
     .frame-placeholder strong { color: var(--text); }
 
@@ -309,6 +312,7 @@
 
             <div class="buttons">
               <button class="primary" id="modRunBtn" disabled>Regenerate &rarr;</button>
+              <button id="modCancelBtn" hidden>Cancel</button>
               <button id="modClearMaskBtn" disabled>Clear mask</button>
             </div>
 

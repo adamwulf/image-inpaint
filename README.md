@@ -181,6 +181,8 @@ netlify/functions/edit-submit.mjs     synchronous front door for the edit: stash
                                       Blobs (dodges the 256 KB background body cap) and triggers edit-background
 netlify/functions/edit-background.mjs images.edit       (gpt-image-2, masked + server composite; background)
 netlify/functions/edit-status.mjs     poll endpoint for the background edit result (Netlify Blobs)
+netlify/functions/edit-cancel.mjs     writes a cancel flag the background job checks so a canceled edit
+                                      bails early (best-effort; saves the OpenAI spend if it's still queued)
 netlify/functions/describe.mjs        chat.completions  (gpt-4o-mini vision, synchronous)
 netlify.toml                   publish "." + functions dir
 package.json                          type: module; deps: sharp, @netlify/blobs (edit path only)
