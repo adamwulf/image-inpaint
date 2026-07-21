@@ -182,6 +182,11 @@
     .frame-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
     .frame-placeholder strong { color: var(--text); }
 
+    /* Row under the edit frame: view toggle (left) + picker links (right-aligned). */
+    .mod-toolbar { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+    .mod-toolbar .segmented { margin-bottom: 0; }
+    .mod-toolbar .picker-links { margin-top: 0; margin-left: auto; }
+
     /* "Choose image…" link below an image frame (replaces the upload/sample toggle) */
     .picker-links { margin-top: 12px; font-size: 16px; color: var(--muted); }
     .picker-links button {
@@ -325,10 +330,24 @@
             <canvas class="mask" id="maskCanvas"></canvas>
           </div>
 
-          <div class="picker-links">
-            <button type="button" id="modChooseBtn">Choose image&hellip;</button>
-            <span class="sep">&middot;</span>
-            <button type="button" id="modSampleBtn">or use a sample</button>
+          <!-- One row: the View toggle (composite vs. raw AI output) on the left,
+               the image-picker links right-aligned. The toggle is hidden until a
+               regenerated version with a raw image is current; the links stay right. -->
+          <div class="mod-toolbar">
+            <div class="segmented" id="modView" role="group" aria-label="View" hidden>
+              <button class="active" data-view="result">Result</button>
+              <button data-view="raw">What the AI changed</button>
+            </div>
+            <div class="picker-links">
+              <button type="button" id="modChooseBtn">Choose image&hellip;</button>
+              <span class="sep">&middot;</span>
+              <button type="button" id="modSampleBtn">or use a sample</button>
+            </div>
+          </div>
+
+          <div class="buttons">
+            <button id="modSendToDescribeBtn" disabled>Use in Describe &rarr;</button>
+            <button id="modDownloadBtn" disabled>Download</button>
           </div>
 
           <p class="section-label" style="margin-top: 22px">Versions &middot; click one to keep editing it</p>

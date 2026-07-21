@@ -14,7 +14,11 @@
 (function () {
   'use strict';
 
-  var MAX_EDGE = 768; // fixed longest-edge downscale before upload
+  // Fixed longest-edge downscale before upload. Matched to the model's output size
+  // (1024) so the edit path has NO resample: source == mask == requested size ==
+  // returned size == displayed size, all 1024². Avoids the 768-in / 1024-out /
+  // 768-display round-trip that softened results.
+  var MAX_EDGE = 1024;
   // Paint the mask OPAQUE (var(--nontop) magenta) so overlapping strokes stay a
   // single flat region; the canvas element's CSS opacity:0.5 makes the whole
   // layer an even translucent overlay you can always see through.
@@ -260,6 +264,9 @@
     var status = $('modStatus');
     var chooseBtn = $('modChooseBtn');
     var sampleBtn = $('modSampleBtn');
+    var sendToDescribeBtn = $('modSendToDescribeBtn');
+    var downloadBtn = $('modDownloadBtn');
+    var viewToggle = $('modView');
     var versionsEl = $('modVersions');
     var versionsEmpty = $('modVersionsEmpty');
     var progress = makeProgress($('modTrack'), $('modFill'));
@@ -273,8 +280,11 @@
 
     // Iterative version history: v1 = the loaded original, then each result.
     // Clicking a thumbnail makes that version current so it can be edited further.
-    var versions = [];         // [{ url, label }]
+    var versions = [];         // [{ src, raw, label, pinned }]
     var currentIndex = -1;
+    // Which image of the current version is ACTIVE (displayed + editable + exported):
+    // 'result' = the mask-confined composite (default), 'raw' = the raw AI output.
+    var viewMode = 'result';
 
     function hasImage() { return !!sourceCanvas; }
 
@@ -452,6 +462,33 @@
       });
       // Auto-scroll to the newest tile on the right.
       versionsEl.scrollLeft = versionsEl.scrollWidth;
+      // There's a current image, so the export buttons apply.
+      sendToDescribeBtn.disabled = false;
+      downloadBtn.disabled = false;
+      updateViewToggle();
+    }
+
+    // The ACTIVE image of the current version — respects the result/raw view toggle,
+    // so Download, "Use in Describe", and the next Regenerate all use whichever image
+    // is currently shown.
+    function currentSrc() {
+      var v = currentIndex >= 0 ? versions[currentIndex] : null;
+      if (!v) return null;
+      return (viewMode === 'raw' && v.raw) ? v.raw : v.src;
+    }
+
+    // Show the Result/Raw view toggle only when the current version has a raw AI
+    // image (i.e. a regenerated version, not the loaded Original); reset to Result.
+    function updateViewToggle() {
+      // A new current version always starts on the 'result' (composite) view.
+      viewMode = 'result';
+      var v = currentIndex >= 0 ? versions[currentIndex] : null;
+      var hasRaw = !!(v && v.raw);
+      viewToggle.hidden = !hasRaw;
+      if (!hasRaw) return;
+      Array.prototype.forEach.call(viewToggle.children, function (b) {
+        b.classList.toggle('active', b.getAttribute('data-view') === 'result');
+      });
     }
 
     // Select an existing version as current (from a thumbnail click).
@@ -525,6 +562,42 @@
     chooseBtn.addEventListener('click', function () { fileInput.click(); });
     sampleBtn.addEventListener('click', function () { loadModifyImage(SAMPLES.modify); });
 
+    // Result / "What the AI changed" view toggle. Whichever image is shown becomes
+    // the ACTIVE image: it loads into the editor as the base (keeping the mask), so
+    // the next Regenerate / Download / "Use in Describe" all act on it.
+    viewToggle.addEventListener('click', async function (e) {
+      var btn = e.target.closest('button[data-view]');
+      if (!btn) return;
+      var mode = btn.getAttribute('data-view');
+      var v = currentIndex >= 0 ? versions[currentIndex] : null;
+      if (!v || (mode === 'raw' && !v.raw) || mode === viewMode) return;
+      viewMode = mode;
+      Array.prototype.forEach.call(viewToggle.children, function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+      // Load the chosen image as the editable base, keeping the painted mask.
+      await setCurrentImage(mode === 'raw' ? v.raw : v.src, true);
+    });
+
+    // Export the current version: send it to Describe (mirror of Generate's
+    // Send-to-Modify), or download it.
+    sendToDescribeBtn.addEventListener('click', function () {
+      var src = currentSrc();
+      if (!src) return;
+      activateTab('describe', true);
+      $('tab-btn-describe').focus();
+      window.__loadDescribeImage(src);
+    });
+
+    downloadBtn.addEventListener('click', function () {
+      var src = currentSrc();
+      if (!src) return;
+      var a = document.createElement('a');
+      a.href = src;
+      a.download = (currentIndex === 0 ? 'original' : 'version-' + (currentIndex + 1)) + '.png';
+      a.click();
+    });
+
     fileInput.addEventListener('change', async function () {
       if (!fileInput.files || !fileInput.files[0]) return;
       var url = await fileToDataUrl(fileInput.files[0]);
@@ -561,13 +634,16 @@
         var data = await postJson('/.netlify/functions/edit', {
           imageB64: imageB64, maskB64: maskB64, prompt: text
         });
-        // OpenAI (gpt-image-1 + input_fidelity:'high') returns the edited image
-        // with the unmasked area kept faithful — no browser compositing.
+        // The server returns TWO images: `image` = the feathered composite (only the
+        // masked region changed, rest is exactly the original) and `raw` = the raw AI
+        // output (the whole canvas the model actually regenerated). We show the
+        // composite by default; `raw` powers the "what the AI actually changed" view.
         var resultUrl = 'data:image/png;base64,' + data.image;
+        var rawUrl = data.raw ? 'data:image/png;base64,' + data.raw : null;
         // Append as a new version and make it current, KEEPING the mask so the same
         // region can be regenerated again (re-roll / tweak the prompt) without
         // re-painting. Clear mask stays available to start a new region.
-        versions.push({ src: resultUrl, label: 'v' + (versions.length + 1) });
+        versions.push({ src: resultUrl, raw: rawUrl, label: 'v' + (versions.length + 1) });
         currentIndex = versions.length - 1;
         await setCurrentImage(resultUrl, true);
         renderVersions();
@@ -617,11 +693,16 @@
         if (placeholder) placeholder.style.display = 'none';
         frame.classList.remove('drop');
         frame.classList.add('masking'); // reuse solid-border state (no crosshair needed but border reads as loaded)
+        // Start fresh on this image: clear any prior description.
+        out.textContent = 'The model’s description will appear here.';
+        out.classList.add('empty');
         runBtn.disabled = false;
         clearBtn.disabled = false;
         setStatus(status, 'Press Describe.', false);
       }).catch(function (err) { setStatus(status, err.message, true); });
     }
+    // Expose for the Modify "Use in Describe" bridge.
+    window.__loadDescribeImage = loadDescribeImage;
 
     modeToggle.addEventListener('click', function (e) {
       var btn = e.target.closest('button[data-mode]');
