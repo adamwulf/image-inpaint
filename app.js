@@ -158,7 +158,15 @@
     });
     var data;
     try { data = await res.json(); }
-    catch (e) { throw new Error('Server returned an unreadable response (' + res.status + ')'); }
+    catch (e) {
+      // A non-JSON body on a server error is almost always the function timing out
+      // (the OpenAI edit can take 20-30s and the serverless function is killed),
+      // which returns an HTML error page. Surface a friendly, actionable message.
+      if (res.status >= 500) {
+        throw new Error('That took too long and timed out. Try again, or paint a smaller region / shorter prompt.');
+      }
+      throw new Error('Server returned an unreadable response (' + res.status + ')');
+    }
     if (!res.ok || data.error) throw new Error(data.error || ('Request failed (' + res.status + ')'));
     return data;
   }
@@ -362,7 +370,9 @@
     }
 
     function updateMaskButtons() {
-      runBtn.disabled = !(hasImage() && painted);
+      // Regenerate works with OR without a mask: with a mask it's a masked edit
+      // (composited), without one the AI rebuilds the whole image from the prompt.
+      runBtn.disabled = !hasImage();
       clearBtn.disabled = !painted;
     }
 
@@ -491,12 +501,13 @@
       });
     }
 
-    // Select an existing version as current (from a thumbnail click).
+    // Select an existing version as current (from a thumbnail click). Keep the
+    // painted mask (preserveMask=true) — it only clears on "Clear mask".
     async function selectVersion(i) {
       if (i < 0 || i >= versions.length || i === currentIndex) return;
       currentIndex = i;
       try {
-        await setCurrentImage(versions[i].src);
+        await setCurrentImage(versions[i].src, true);
         renderVersions();
         setStatus(status, 'Editing ' + versions[i].label + '. Paint a region, then Regenerate.', false);
       } catch (err) {
@@ -521,7 +532,7 @@
         currentIndex = 0;
         await setCurrentImage(url);
         renderVersions();
-        setStatus(status, 'Paint the area to regenerate, then press Regenerate.', false);
+        setStatus(status, 'Paint a region to change just that, or press Regenerate to rebuild the whole image.', false);
       } catch (err) {
         setStatus(status, err.message, true);
       }
@@ -618,36 +629,35 @@
       if (file) { var url = await fileToDataUrl(file); loadModifyImage(url); }
     });
 
-    // ---- run inpaint: result becomes a new version AND the current image ----
+    // ---- run: with a mask it's a masked edit (composited); without a mask the AI
+    // rebuilds the whole image. Either way the result becomes a new current version.
     runBtn.addEventListener('click', async function () {
       if (!hasImage()) { setStatus(status, 'Load an image first.', true); return; }
-      if (!painted) { setStatus(status, 'Paint a region to regenerate first.', true); return; }
       var text = promptEl.value.trim();
-      if (!text) { setStatus(status, 'Enter a modify prompt first.', true); return; }
+      if (!text) { setStatus(status, 'Enter a prompt first.', true); return; }
+      var masked = painted;
 
       runBtn.disabled = true;
-      setStatus(status, 'Regenerating masked region…', false);
+      setStatus(status, masked ? 'Regenerating masked region…' : 'Regenerating the whole image…', false);
       progress.start();
       try {
-        var imageB64 = canvasToPngBase64(sourceCanvas.canvas);
-        var maskB64 = exportMaskBase64();
-        var data = await postJson('/.netlify/functions/edit', {
-          imageB64: imageB64, maskB64: maskB64, prompt: text
-        });
-        // The server returns TWO images: `image` = the feathered composite (only the
-        // masked region changed, rest is exactly the original) and `raw` = the raw AI
-        // output (the whole canvas the model actually regenerated). We show the
-        // composite by default; `raw` powers the "what the AI actually changed" view.
+        var body = { imageB64: canvasToPngBase64(sourceCanvas.canvas), prompt: text };
+        // Only send a mask when one is painted; no mask => full-image rebuild.
+        if (masked) body.maskB64 = exportMaskBase64();
+        var data = await postJson('/.netlify/functions/edit', body);
+        // Masked edits return `image` = the feathered composite (only the masked region
+        // changed) plus `raw` = the whole canvas the model regenerated. A no-mask rebuild
+        // returns just `image` (there's nothing to composite / no "raw vs result").
         var resultUrl = 'data:image/png;base64,' + data.image;
         var rawUrl = data.raw ? 'data:image/png;base64,' + data.raw : null;
-        // Append as a new version and make it current, KEEPING the mask so the same
-        // region can be regenerated again (re-roll / tweak the prompt) without
-        // re-painting. Clear mask stays available to start a new region.
+        // Append as a new version and make it current, KEEPING any mask so the same
+        // region can be regenerated again without re-painting.
         versions.push({ src: resultUrl, raw: rawUrl, label: 'v' + (versions.length + 1) });
         currentIndex = versions.length - 1;
         await setCurrentImage(resultUrl, true);
         renderVersions();
-        setStatus(status, 'Done — now editing ' + versions[currentIndex].label + '. Mask kept; paint more or Clear mask.', false);
+        setStatus(status, 'Done — now editing ' + versions[currentIndex].label +
+          (masked ? '. Mask kept; paint more or Clear mask.' : '.'), false);
       } catch (err) {
         setStatus(status, err.message, true);
       } finally {

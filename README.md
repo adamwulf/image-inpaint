@@ -6,7 +6,8 @@ for Good and for Evil"**). Three mutually-exclusive tabs, all backed by OpenAI:
 - **Generate** — text-to-image. Type a prompt, get a 1024×1024 image. (`images.generate`, `gpt-image-1-mini`)
 - **Modify** — masked inpaint. Load an image, paint the region to change, describe the
   change, and regenerate just that region — iteratively, with a version history.
-  (`images.edit`, `gpt-image-1` with `input_fidelity: high` so the unmasked area stays faithful)
+  (`images.edit`, `gpt-image-2`; the server composites the result back through a feathered
+  mask so only the painted region changes — see "Why we composite" below.)
 - **Describe** — image-to-text. Load an image and either describe it or read its text
   (OCR mode). (`gpt-4o-mini` vision via Chat Completions)
 
@@ -47,8 +48,8 @@ before you make the site public:
   usage limit on the project whose key this uses (e.g. **~$5**). This is the real backstop
   against a runaway bill — without it, nothing stops a busy day (or an abusive visitor) from
   running the bill up. Each request costs cents; the cap bounds the total. Note the **Modify**
-  tab uses the pricier full **`gpt-image-1`** (Generate/Describe use the cheaper mini / 4o-mini),
-  so size the cap with the edit tab in mind.
+  tab uses the full **`gpt-image-2`** (Generate uses the cheaper `gpt-image-1-mini`; Describe
+  uses `gpt-4o-mini`), so size the cap with the edit tab in mind.
 
 - [ ] **2. Netlify per-IP rate limiting.** Turn on rate limiting for the three functions
   (Netlify → site config → rate limiting) so a single visitor can't hammer the endpoints.
@@ -65,7 +66,17 @@ before you make the site public:
   required attribution in the footer. Use your own images or genuinely licensed sources
   (CC0 / Unsplash / Pexels / Pixabay / Wikimedia). Do not ship unlicensed images.
 
-Items 1–3 are set in dashboards, not in this repo. **Do not skip them.**
+- [ ] **5. Move the edit path to an async / background function.** The Modify edit is slow:
+  the OpenAI call runs ~20–28 s and the server-side composite adds ~2–3 s. That does **not**
+  fit a synchronous serverless function — Netlify's default function timeout is 10 s (26 s on
+  Pro), and even Pro's 26 s is intermittently blown by a ~30 s edit. Local `netlify dev` allows
+  30 s, so it's fine for a **local** recording, but a robust **public** deploy needs a
+  [Netlify Background Function](https://docs.netlify.com/functions/background-functions/):
+  the browser submits the edit, gets a job id, and polls for the result (with a spinner that
+  can run 30 s+). The app ships a graceful timeout message today, but that's a fallback, not a
+  fix. Build this before relying on the Modify tab in production.
+
+Items 1–3 are set in dashboards, not in this repo; #5 is a code change. **Do not skip them.**
 
 ## Sample images
 
@@ -99,14 +110,34 @@ clicking back to Original is the "here's what was actually real" reveal.
 OpenAI's edit mask is a PNG with the **same dimensions as the image**, where **alpha 0
 (transparent) = "edit here"** and alpha 255 = "keep". The client:
 
-- keeps the source and mask at the same downscaled dims (fixed **768 px** longest edge),
+- keeps the source and mask at the same downscaled dims (fixed **1024 px** longest edge, so
+  input == the model's 1024² output == display — no resample round-trip),
 - paints the brush at *image* resolution (pointer coords are mapped back from the CSS-scaled
   display), and
 - on export inverts the alpha: brushed → alpha 0, unpainted → alpha 255 (`exportMaskBase64`
   in `app.js`).
 
-If the wrong region changes, the alpha inversion is flipped. If OpenAI errors on dimensions,
-the mask and image dims don't match.
+If OpenAI errors on dimensions, the mask and image dims don't match.
+
+## Why we composite (a 5.05a teaching point)
+
+The mask does **not**, by itself, confine an edit to the painted region. OpenAI's docs say it
+plainly: *"Masking with GPT Image is entirely prompt-based. The model uses the mask as
+guidance, but may not follow its exact shape with complete precision."* GPT-Image models
+**regenerate the whole canvas** and treat the mask as a hint — OpenAI Support has confirmed
+this is *"a known limitation"* (unlike the retired DALL·E-2, which did true pixel-level
+replacement). Measured, an edit drifts the *unmasked* area by ~45–55 / 255 on average — enough
+to silently change things you never painted (in testing, a masked edit on one side turned the
+dog's nose pink on the other).
+
+So `edit.mjs` confines the edit itself: it keeps the **original** outside the mask and blends
+the AI result **inside** it, with a **feathered** (Gaussian-blurred) mask edge so the seam
+fades. Only the painted region changes; everything else is pixel-exact to the source.
+
+This is also the lesson: generative AI doesn't surgically edit — it *regenerates*, and quietly
+changes things you didn't ask for. The Modify tab's **"What the AI changed"** toggle shows the
+raw, uncomposited model output next to the clean composite, so you can see the whole-canvas
+drift the mask was supposed to prevent.
 
 ## Files
 
@@ -114,7 +145,7 @@ the mask and image dims don't match.
 index.html                     UI + house-style <style> block (self-contained, no CDNs)
 app.js                         all client logic (tabs, mask, downscale, fetch, bridge)
 netlify/functions/generate.mjs images.generate  (gpt-image-1-mini)
-netlify/functions/edit.mjs     images.edit       (gpt-image-1 + input_fidelity:high, masked)
+netlify/functions/edit.mjs     images.edit       (gpt-image-2, masked + server composite)
 netlify/functions/describe.mjs chat.completions  (gpt-4o-mini vision)
 netlify.toml                   publish "." + functions dir
 package.json                   type: module (zero runtime dependencies)

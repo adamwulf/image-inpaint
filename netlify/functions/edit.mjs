@@ -1,4 +1,4 @@
-// edit.mjs — masked inpaint / touchup (OpenAI images.edit, gpt-image-1).
+// edit.mjs — masked inpaint / touchup (OpenAI images.edit, gpt-image-2).
 // OPENAI_API_KEY is read from the environment and NEVER sent to the browser.
 // Deploy safeguards (OpenAI spend cap + Netlify per-IP rate limiting) are in README.md.
 //
@@ -24,25 +24,25 @@ export default async (req) => {
     if (!key) return json({ error: 'Server missing OPENAI_API_KEY. Set it in Netlify env / .env.' }, 500);
 
     const { imageB64, maskB64, prompt } = await req.json(); // browser strips the data: prefix
-    if (!imageB64 || !maskB64 || !prompt) return json({ error: 'missing image, mask, or prompt' }, 400);
+    if (!imageB64 || !prompt) return json({ error: 'missing image or prompt' }, 400);
 
     const imageBuf = Buffer.from(imageB64, 'base64');
-    const maskBuf = Buffer.from(maskB64, 'base64');
+    const maskBuf = maskB64 ? Buffer.from(maskB64, 'base64') : null; // optional
     // Fail fast (and free) on oversized inputs, before calling OpenAI.
-    if (imageBuf.length > 4_000_000 || maskBuf.length > 4_000_000) {
+    if (imageBuf.length > 4_000_000 || (maskBuf && maskBuf.length > 4_000_000)) {
       return json({ error: 'image/mask too large (max 4MB each)' }, 413);
     }
 
     const form = new FormData();
-    form.append('model', 'gpt-image-1');
+    form.append('model', 'gpt-image-2');
     form.append('image', new Blob([imageBuf], { type: 'image/png' }), 'image.png');
-    form.append('mask', new Blob([maskBuf], { type: 'image/png' }), 'mask.png');
+    // No mask => the model rebuilds the WHOLE image from the prompt (no composite).
+    if (maskBuf) form.append('mask', new Blob([maskBuf], { type: 'image/png' }), 'mask.png');
     form.append('prompt', String(prompt).slice(0, 1000));
     form.append('size', '1024x1024');
     form.append('quality', 'low');
-    // input_fidelity:'high' keeps the AI's own unmasked area closer to the source;
-    // the composite below is what actually GUARANTEES the unmasked area is untouched.
-    form.append('input_fidelity', 'high');
+    // No input_fidelity: gpt-image-2 rejects it (it's high-fidelity automatically),
+    // and the composite below is what GUARANTEES the unmasked area is untouched anyway.
     form.append('n', '1');
 
     const res = await fetch(OPENAI_URL, {
@@ -57,12 +57,13 @@ export default async (req) => {
     const rawB64 = data.data[0]?.b64_json;
     if (!rawB64) return json({ error: 'no image returned' }, 502);
 
-    // Composite the AI result back through a feathered mask so only the painted
-    // region changes (the rest stays exactly the original).
-    const compositeB64 = await compositeMasked(imageBuf, maskBuf, Buffer.from(rawB64, 'base64'));
+    // No mask: the whole-image rebuild IS the result — nothing to composite.
+    if (!maskBuf) return json({ image: rawB64 });
 
-    // image = the clean, mask-confined result (default); raw = what the model
-    // actually produced across the whole canvas (for the "what the AI changed" view).
+    // Masked: composite the AI result back through a feathered mask so only the
+    // painted region changes (the rest stays exactly the original). Return both the
+    // composite (default) and the raw whole-canvas output (the "what the AI changed" view).
+    const compositeB64 = await compositeMasked(imageBuf, maskBuf, Buffer.from(rawB64, 'base64'));
     return json({ image: compositeB64, raw: rawB64 });
   } catch (e) {
     return json({ error: e?.message || 'edit failed' }, 500);
