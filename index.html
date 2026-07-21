@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Image Generation &amp; Editor</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1e27;
+      --panel-2: #232936;
+      --text: #f2f5fa;
+      --muted: #9aa5b8;
+      --accent: #4da3ff;
+      --chosen: #ffd166;
+      --nontop: #e06cff;
+      --bar-bg: #2b3242;
+      --border: #2e3646;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 20px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 32px 28px 70px; }
+
+    h1 { font-size: 40px; margin: 0 0 4px; letter-spacing: -0.5px; }
+    .subtitle { color: var(--muted); font-size: 20px; margin: 0 0 26px; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 22px;
+    }
+
+    /* Eyebrow / section labels */
+    label, .section-label {
+      display: block;
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    /* ---- Tab bar: segmented pill ---- */
+    .tabbar {
+      display: inline-flex;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 3px;
+      gap: 2px;
+      margin-bottom: 24px;
+    }
+    .tabbar button {
+      font-size: 17px; font-weight: 600; font-family: inherit; color: var(--muted);
+      background: transparent; border: none; border-radius: 8px; padding: 10px 20px; cursor: pointer; white-space: nowrap;
+    }
+    .tabbar button:hover { color: var(--text); }
+    .tabbar button.active { background: var(--accent); color: #06121f; }
+    .tabpane { display: none; min-height: 520px; }
+    .tabpane.active { display: block; }
+
+    /* Controls on the left, large output on the right. Stacks under 900px. */
+    .layout { display: grid; grid-template-columns: minmax(380px, 41%) 1fr; gap: 26px; align-items: start; }
+    .output-col { position: sticky; top: 20px; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .output-col { position: static; }
+    }
+
+    /* Inputs */
+    textarea, input[type="text"], input[type="number"], select {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 18px;
+      font-family: inherit;
+    }
+    textarea { min-height: 96px; resize: vertical; font-size: 22px; line-height: 1.4; }
+    input[type="text"], input[type="number"] { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    /* Buttons */
+    .buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+    button {
+      font-size: 20px; font-weight: 600; font-family: inherit;
+      padding: 14px 22px; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--panel-2); color: var(--text); cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #2c3444; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; }
+    button.primary:hover:not(:disabled) { background: #6bb4ff; }
+    button.danger { background: var(--danger); border-color: var(--danger); color: #180606; }
+    button.danger:hover:not(:disabled) { background: #ff8585; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Seed row: field + randomize */
+    .seed-row { display: flex; gap: 10px; align-items: flex-end; margin-top: 20px; }
+    .seed-row .seed-field { flex: 1; }
+    .seed-row button { padding: 12px 16px; font-size: 16px; }
+
+    /* Sliders with gold readouts */
+    .metas { display: grid; gap: 22px; margin-top: 20px; }
+    .meta-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .meta-head label { margin-bottom: 4px; }
+    .meta-value { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 700; color: var(--chosen); }
+    input[type="range"] { width: 100%; accent-color: var(--accent); height: 28px; }
+    .meta-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-top: -4px; }
+
+    /* Brush-size slider reads magenta to echo the mask color */
+    .meta-value.mask { color: var(--nontop); }
+
+    /* Model line + download + status */
+    .model-line {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 15px; color: var(--muted);
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px; line-height: 1.5; margin-top: 16px;
+    }
+    .track { background: var(--bar-bg); border-radius: 8px; height: 34px; overflow: hidden; margin-top: 10px; }
+    .track[hidden] { display: none; }
+    .fill {
+      height: 100%; border-radius: 8px 0 0 8px;
+      background: linear-gradient(90deg, #3a72c9, var(--accent));
+      transition: width 0.35s ease; min-width: 2px;
+    }
+    .status { min-height: 24px; color: var(--muted); font-size: 17px; margin-top: 16px; }
+    .status.error { color: var(--danger); }
+
+    /* Source toggle (Modify / Describe tabs: Upload / Sample) */
+    .segmented {
+      display: inline-flex; background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 8px; padding: 2px; margin-bottom: 8px;
+    }
+    .segmented button {
+      font-size: 15px; font-family: inherit; color: var(--muted);
+      background: transparent; border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer;
+    }
+    .segmented button:hover { color: var(--text); background: transparent; }
+    .segmented button.active { background: var(--accent); color: #06121f; }
+    input[type="file"] { display: none; }
+
+    /* Output / canvas square frame (Generate) */
+    .output-frame {
+      position: relative; width: 100%; aspect-ratio: 1 / 1;
+      border-radius: 14px; border: 1px solid var(--border);
+      overflow: hidden; background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .output-frame img, .output-frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .output-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
+
+    /* Image frame: base image + mask overlay, drawn on top. Crosshair while masking.
+       (.frame is the family name; .drop = droppable empty state, .masking = image loaded) */
+    .frame {
+      position: relative; width: 100%; aspect-ratio: 1 / 1;
+      border-radius: 14px; border: 1px solid var(--border);
+      overflow: hidden; background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .frame.drop { border-style: dashed; cursor: pointer; }
+    .frame.dragover { border-color: var(--accent); background: #26303f; }
+    .frame.masking { border-style: solid; cursor: crosshair; }
+    .frame img, .frame canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+    /* Mask is painted OPAQUE on the canvas (so overlapping strokes don't darken)
+       and the whole layer is made translucent here — a single even 50% overlay
+       you can always see through. */
+    .frame canvas.mask { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.5; }
+    .frame-placeholder { color: var(--muted); font-size: 17px; text-align: center; padding: 24px; }
+    .frame-placeholder strong { color: var(--text); }
+
+    /* Row under the edit frame: view toggle (left) + picker links (right-aligned). */
+    .mod-toolbar { display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+    .mod-toolbar .segmented { margin-bottom: 0; }
+    .mod-toolbar .picker-links { margin-top: 0; margin-left: auto; }
+
+    /* "Choose image…" link below an image frame (replaces the upload/sample toggle) */
+    .picker-links { margin-top: 12px; font-size: 16px; color: var(--muted); }
+    .picker-links button {
+      font-size: 16px; font-family: inherit; font-weight: 600; color: var(--accent);
+      background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .picker-links button:hover { color: #6bb4ff; background: none; }
+    .picker-links .sep { color: var(--border); margin: 0 8px; }
+
+    /* Mask legend (magenta = area to regenerate) */
+    .mask-legend { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin-top: 12px;
+      text-transform: none; letter-spacing: 0; }
+    .mask-legend .dot { width: 12px; height: 12px; border-radius: 4px; background: var(--nontop); opacity: 0.7; display: inline-block; }
+
+    /* Version history strip (Modify tab): original + each regenerated result.
+       Clicking a thumbnail makes it the current image in the editor above.
+       Canonical family strip (style-helper): active = var(--accent) interactive blue. */
+    .versions { display: flex; gap: 12px; overflow-x: auto; padding: 6px 2px 10px; margin-top: 8px; scroll-snap-type: x proximity; }
+    .versions::-webkit-scrollbar { height: 8px; }
+    .versions::-webkit-scrollbar-track { background: transparent; }
+    .versions::-webkit-scrollbar-thumb { background: var(--bar-bg); border-radius: 4px; }
+    .versions::-webkit-scrollbar-thumb:hover { background: #3a4457; }
+    .versions-empty { color: var(--muted); font-size: 16px; padding: 4px 0; }
+    .version { flex: 0 0 auto; width: 92px; scroll-snap-align: start; background: transparent; border: none; padding: 0; cursor: pointer; text-align: center; font-family: inherit; }
+    .version .thumb { width: 92px; height: 92px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2); overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s ease; }
+    .version .thumb img, .version .thumb canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .version:hover .thumb { border-color: var(--accent); }
+    .version.active .thumb { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 1px; }
+    .version .label { display: block; margin-top: 8px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .version.active .label { color: var(--text); font-weight: 600; }
+    .version .pin { position: absolute; top: 4px; left: 4px; z-index: 2; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text); background: rgba(11,13,18,0.7); padding: 2px 5px; border-radius: 5px; }
+
+    /* Describe tab: text output panel */
+    .describe-output {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 14px;
+      padding: 22px 24px; min-height: 220px; font-size: 20px; line-height: 1.55; color: var(--text);
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .describe-output.empty { color: var(--muted); display: flex; align-items: center; justify-content: center; text-align: center; }
+
+    /* Footer */
+    .footnote { margin-top: 30px; color: var(--muted); font-size: 15px; line-height: 1.6; }
+    .footnote code { background: var(--panel-2); padding: 2px 6px; border-radius: 5px; font-size: 14px; }
+    .footnote a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+    .footnote a:hover { color: var(--accent); }
+    .repo-link { margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Image Generation &amp; Editor</h1>
+    <p class="subtitle">
+      Generate an image from a prompt, mask a region and regenerate just that
+      part, or ask the model to describe an image in words.
+    </p>
+
+    <!-- Tab bar -->
+    <div class="tabbar" role="tablist" aria-label="Tools">
+      <button class="active" id="tab-btn-generate" data-tab="generate" role="tab" aria-selected="true" aria-controls="tab-generate">Generate</button>
+      <button id="tab-btn-modify" data-tab="modify" role="tab" aria-selected="false" aria-controls="tab-modify" tabindex="-1">Modify</button>
+      <button id="tab-btn-describe" data-tab="describe" role="tab" aria-selected="false" aria-controls="tab-describe" tabindex="-1">Describe</button>
+    </div>
+
+    <!-- ===================== TAB 1: GENERATE ===================== -->
+    <div class="tabpane active" id="tab-generate" role="tabpanel" aria-labelledby="tab-btn-generate">
+      <div class="layout">
+        <!-- LEFT: controls -->
+        <div class="controls-col">
+          <div class="panel">
+            <label for="genPrompt">Prompt</label>
+            <textarea id="genPrompt" spellcheck="false" placeholder="A lighthouse at dusk, watercolor..."></textarea>
+
+            <div class="buttons">
+              <button class="primary" id="genRunBtn">Generate &rarr;</button>
+              <button id="genClearBtn">Clear</button>
+            </div>
+
+            <div class="model-line" id="genModelLine">gpt-image-1-mini &middot; text-to-image</div>
+            <div class="track" id="genTrack" hidden><div class="fill" id="genFill" style="width: 0%"></div></div>
+            <div class="status" id="genStatus">Enter a prompt and press Generate.</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: output -->
+        <div class="output-col">
+          <div class="output-frame">
+            <div class="output-placeholder" id="genPlaceholder">Your generated image will appear here.</div>
+            <!-- generated image <img id="genImage"> gets shown here -->
+          </div>
+          <div class="buttons">
+            <button id="genSendToModifyBtn" disabled>Send to Modify &rarr;</button>
+            <button id="genDownloadBtn" disabled>Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== TAB 2: MODIFY (inpaint) ===================== -->
+    <div class="tabpane" id="tab-modify" role="tabpanel" aria-labelledby="tab-btn-modify">
+      <div class="layout">
+        <!-- LEFT: mask controls -->
+        <div class="controls-col">
+          <div class="panel">
+            <input type="file" id="modFileInput" accept="image/*" />
+
+            <label for="modPrompt">Modify prompt</label>
+            <textarea id="modPrompt" spellcheck="false" placeholder="What should fill the masked area? e.g. add sunglasses"></textarea>
+
+            <div class="metas">
+              <div>
+                <div class="meta-head">
+                  <label for="brushSize" style="margin-bottom: 4px">Brush size</label>
+                  <span class="meta-value mask" id="brushSizeValue">40</span>
+                </div>
+                <input type="range" id="brushSize" min="5" max="120" step="1" value="40" />
+                <div class="meta-scale"><span>5 &middot; fine</span><span>120 &middot; broad</span></div>
+              </div>
+            </div>
+
+            <div class="buttons">
+              <button class="primary" id="modRunBtn" disabled>Regenerate &rarr;</button>
+              <button id="modClearMaskBtn" disabled>Clear mask</button>
+            </div>
+
+            <div class="mask-legend"><span class="dot"></span>Painted area will be regenerated</div>
+
+            <div class="model-line" id="modModelLine">gpt-image-2 &middot; masked edit (inpaint)</div>
+            <div class="track" id="modTrack" hidden><div class="fill" id="modFill" style="width: 0%"></div></div>
+            <div class="status" id="modStatus">Load an image. Paint a region to change just that, or Regenerate to rebuild the whole image.</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: image + mask canvas -->
+        <div class="output-col">
+          <div class="frame drop" id="modFrame">
+            <div class="frame-placeholder" id="modPlaceholder">
+              <strong>Load an image to edit</strong><br />choose one below, or send one from Generate
+            </div>
+            <!-- base image <img id="modImage"> below; mask canvas #maskCanvas painted on top -->
+            <canvas class="mask" id="maskCanvas"></canvas>
+          </div>
+
+          <!-- One row: the View toggle (composite vs. raw AI output) on the left,
+               the image-picker links right-aligned. The toggle is hidden until a
+               regenerated version with a raw image is current; the links stay right. -->
+          <div class="mod-toolbar">
+            <div class="segmented" id="modView" role="group" aria-label="View" hidden>
+              <button class="active" data-view="result">Result</button>
+              <button data-view="raw">What the AI changed</button>
+            </div>
+            <div class="picker-links">
+              <button type="button" id="modChooseBtn">Choose image&hellip;</button>
+              <span class="sep">&middot;</span>
+              <button type="button" id="modSampleBtn">or use a sample</button>
+            </div>
+          </div>
+
+          <div class="buttons">
+            <button id="modSendToDescribeBtn" disabled>Use in Describe &rarr;</button>
+            <button id="modDownloadBtn" disabled>Download</button>
+          </div>
+
+          <p class="section-label" style="margin-top: 22px">Versions &middot; click one to keep editing it</p>
+          <!-- Version history: the original (pinned, index 0) plus every regenerated
+               result. The active version is what the editor above shows and masks
+               against; clicking a thumbnail makes it current so you can touch it up
+               further. Canonical family strip (style-helper). -->
+          <div class="versions" id="modVersions">
+            <div class="versions-empty" id="modVersionsEmpty">Load an image and regenerate &mdash; each version shows up here.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== TAB 3: DESCRIBE (image-to-text) ===================== -->
+    <div class="tabpane" id="tab-describe" role="tabpanel" aria-labelledby="tab-btn-describe">
+      <div class="layout">
+        <!-- LEFT: image picker -->
+        <div class="controls-col">
+          <div class="panel">
+            <label style="margin-bottom: 6px">Task</label>
+            <div class="segmented" id="descMode" role="group" aria-label="Task" style="margin-bottom: 16px">
+              <button class="active" data-mode="describe">Describe</button>
+              <button data-mode="ocr">Read text</button>
+            </div>
+
+            <input type="file" id="descFileInput" accept="image/*" />
+
+            <div class="frame drop" id="descFrame">
+              <div class="frame-placeholder" id="descPlaceholder">
+                <strong>Load an image to describe</strong><br />choose one below
+              </div>
+              <!-- base image <img id="descImage"> shown here -->
+            </div>
+
+            <div class="picker-links">
+              <button type="button" id="descChooseBtn">Choose image&hellip;</button>
+              <span class="sep">&middot;</span>
+              <button type="button" id="descSampleBtn">or use a sample</button>
+            </div>
+
+            <div class="buttons">
+              <button class="primary" id="descRunBtn" disabled>Describe &rarr;</button>
+              <button id="descClearBtn" disabled>Clear</button>
+            </div>
+
+            <div class="model-line" id="descModelLine">gpt-4o-mini &middot; image-to-text (vision)</div>
+            <div class="track" id="descTrack" hidden><div class="fill" id="descFill" style="width: 0%"></div></div>
+            <div class="status" id="descStatus">Load an image, then press Describe.</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: text output -->
+        <div class="output-col">
+          <div class="describe-output empty" id="descOut">The model's description will appear here.</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="footnote repo-link">
+      Source on <a href="https://github.com/adamwulf/image-inpaint" target="_blank" rel="noopener">GitHub</a>.
+      Sample photo by
+      <a href="https://unsplash.com/@alvannee?utm_source=unsplash&amp;utm_medium=referral&amp;utm_content=creditShareLink" target="_blank" rel="noopener">Alvan Nee</a>
+      on
+      <a href="https://unsplash.com/photos/fluffy-white-dog-shaking-its-head-water-droplets-flying-rpkBHHu2TyE?utm_source=unsplash&amp;utm_medium=referral&amp;utm_content=creditShareLink" target="_blank" rel="noopener">Unsplash</a>.
+    </p>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

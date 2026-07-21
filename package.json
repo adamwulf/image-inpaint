@@ -1,0 +1,14 @@
+{
+  "name": "image-inpaint",
+  "version": "1.0.0",
+  "description": "OpenAI-backed Generate / Modify / Describe image demo (course 5.05a).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "sharp": "^0.35.3"
+  }
+}
