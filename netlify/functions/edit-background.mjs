@@ -93,8 +93,13 @@ async function compositeMasked(sourceBuf, maskBuf, aiBuf) {
   const meta = await sharp(sourceBuf).metadata();
   const w = meta.width, h = meta.height;
 
-  const source = await sharp(sourceBuf).removeAlpha().resize(w, h, { fit: 'fill' }).raw().toBuffer();
-  const ai = await sharp(aiBuf).removeAlpha().resize(w, h, { fit: 'fill' }).raw().toBuffer();
+  // Force sRGB (3 channels) before removeAlpha: a grayscale source/result would
+  // otherwise yield a 1-channel raw buffer and the `s += 3` blend loop below would
+  // read out of bounds. The client always sends square RGBA (the whole pipeline is
+  // 1024x1024), so source/mask/ai already share dims — resize is a safety no-op that
+  // also guards against any off-by-one from OpenAI, keeping the overlay pixel-exact.
+  const source = await sharp(sourceBuf).toColourspace('srgb').removeAlpha().resize(w, h, { fit: 'fill' }).raw().toBuffer();
+  const ai = await sharp(aiBuf).toColourspace('srgb').removeAlpha().resize(w, h, { fit: 'fill' }).raw().toBuffer();
   const maskAlpha = await sharp(maskBuf).ensureAlpha().resize(w, h, { fit: 'fill' })
     .extractChannel('alpha').toColourspace('b-w').raw().toBuffer();
 

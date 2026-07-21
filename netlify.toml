@@ -1,13 +1,19 @@
-# Netlify config — serves index.html at the repo root and the three functions
-# under /.netlify/functions/*. `netlify dev` uses this to run everything locally.
+# Netlify config — serves index.html at the repo root and the four functions
+# (generate, edit-background, edit-status, describe) under /.netlify/functions/*.
+# `netlify dev` uses this to run everything locally.
 
 [build]
   publish = "."
   functions = "netlify/functions"
 
 [functions]
-  # .mjs uses ES modules; node_bundler esbuild bundles the openai dependency.
+  # .mjs uses ES modules. There is no OpenAI SDK — the functions call the REST API
+  # with plain fetch; the runtime deps are `sharp` (compositing) and `@netlify/blobs`
+  # (async job store). esbuild can't bundle sharp's native binary, so mark it external
+  # explicitly (Netlify externalizes it by default today; this makes it bundler-default
+  # independent so a future default change can't silently break the deploy).
   node_bundler = "esbuild"
+  external_node_modules = ["sharp"]
 
 [dev]
   publish = "."

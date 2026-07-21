@@ -84,8 +84,14 @@
    * Shared helpers
    * ---------------------------------------------------------------------- */
 
-  // Draw a source (HTMLImageElement) onto a canvas scaled to <=768 longest edge.
-  // Returns { canvas, width, height }.
+  // Aspect-fit a source (HTMLImageElement) into a SQUARE maxEdge x maxEdge canvas,
+  // centered, on a WHITE background (letterbox). Keeping everything square means the
+  // OpenAI edit can request size:'1024x1024' with no aspect distortion, and the
+  // returned square result overlays the (square) source pixel-for-pixel in the
+  // composite — a non-square input would otherwise come back square from gpt-image
+  // and get squashed on the way back. White padding never loses image content (the
+  // whole photo stays visible and maskable), and outside the mask the bars stay
+  // white via the composite. Returns { canvas, width, height } (width === height).
   function downscaleToCanvas(img, maxEdge) {
     var w = img.naturalWidth || img.width;
     var h = img.naturalHeight || img.height;
@@ -93,10 +99,12 @@
     var dw = Math.max(1, Math.round(w * scale));
     var dh = Math.max(1, Math.round(h * scale));
     var c = document.createElement('canvas');
-    c.width = dw; c.height = dh;
+    c.width = maxEdge; c.height = maxEdge;
     var ctx = c.getContext('2d');
-    ctx.drawImage(img, 0, 0, dw, dh);
-    return { canvas: c, width: dw, height: dh };
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, maxEdge, maxEdge);
+    ctx.drawImage(img, Math.round((maxEdge - dw) / 2), Math.round((maxEdge - dh) / 2), dw, dh);
+    return { canvas: c, width: maxEdge, height: maxEdge };
   }
 
   function canvasToPngBase64(canvas) {
@@ -186,25 +194,40 @@
     if (res.status !== 202 && res.status !== 200) {
       throw new Error('Could not start the edit (' + res.status + ').');
     }
-    // Poll edit-status until done/error, or give up after ~90s.
-    var deadline = Date.now() + 90000;
+    // Poll edit-status until done/error, or give up after ~150s. (The background
+    // function itself has up to 15 min; the client cap is generous but bounded so a
+    // stuck job doesn't spin forever.)
+    var statusUrl = '/.netlify/functions/edit-status?id=' + encodeURIComponent(jobId);
+    var deadline = Date.now() + 150000;
     while (Date.now() < deadline) {
       await new Promise(function (r) { setTimeout(r, 2000); });
+      // Fetch and parse are separated on purpose: a network hiccup OR a body that
+      // fails to parse after a 200 (truncated response, backgrounded tab) must NOT
+      // discard a finished result. Because edit-status no longer deletes on read, the
+      // blob survives and the next poll recovers it; we only delete via an explicit
+      // ack AFTER a successful parse below.
+      var sres;
+      try {
+        sres = await fetch(statusUrl);
+      } catch (e) { continue; } // transient network error — keep polling
       var s;
       try {
-        var sres = await fetch('/.netlify/functions/edit-status?id=' + encodeURIComponent(jobId));
         s = await sres.json();
-      } catch (e) { continue; } // transient — keep polling
-      if (s.status === 'done') return s;
-      if (s.status === 'error') throw new Error(s.error || 'edit failed');
+      } catch (e) { continue; } // unreadable body — the blob is still there, re-poll
+      if (s.status === 'done' || s.status === 'error') {
+        // We have the result in hand; tell the server it can drop the blob now.
+        fetch(statusUrl + '&ack=1').catch(function () {}); // best-effort cleanup
+        if (s.status === 'error') throw new Error(s.error || 'edit failed');
+        return s;
+      }
       if (onProgress) onProgress();
     }
     throw new Error('That took too long and timed out. Try again, or paint a smaller region / shorter prompt.');
   }
 
   /* Sample image. dog.png is a real Unsplash photo (Alvan Nee, Unsplash License,
-     credited in the footer), center-cropped to 768². Used for both Modify and
-     Describe "or use a sample". */
+     credited in the footer), 1024² (already square, so it letterboxes to itself).
+     Used for both Modify and Describe "or use a sample". */
   var SAMPLES = {
     modify: 'samples/dog.png',
     describe: 'samples/dog.png'
@@ -310,8 +333,8 @@
     var versionsEmpty = $('modVersionsEmpty');
     var progress = makeProgress($('modTrack'), $('modFill'));
 
-    // The current image lives on this offscreen canvas at <=768 px; the mask
-    // canvas is sized to EXACTLY the same pixel dims so OpenAI accepts the pair.
+    // The current image lives on this offscreen canvas at 1024² (square, letterboxed);
+    // the mask canvas is sized to EXACTLY the same pixel dims so OpenAI accepts the pair.
     var sourceCanvas = null;   // { canvas, width, height } of the CURRENT version
     var maskCtx = maskCanvas.getContext('2d');
     var painted = false;       // has anything been painted onto the mask?
@@ -721,7 +744,7 @@
     var modeToggle = $('descMode');
     var progress = makeProgress($('descTrack'), $('descFill'));
 
-    var sourceCanvas = null; // downscaled <=768 for cheaper tokens
+    var sourceCanvas = null; // 1024² square (letterboxed) offscreen canvas
     var mode = 'describe';
 
     function loadDescribeImage(src) {

@@ -12,8 +12,10 @@ for Good and for Evil"**). Three mutually-exclusive tabs, all backed by OpenAI:
   (OCR mode). (`gpt-4o-mini` vision via Chat Completions)
 
 The OpenAI API key lives **only** in a Netlify function's environment — it is never sent
-to the browser. The browser POSTs base64 JSON to `/.netlify/functions/{generate,edit,describe}`
-and renders what comes back.
+to the browser. The browser POSTs base64 JSON to the functions under `/.netlify/functions/`
+(`generate`, `describe`, and — for the slow masked edit — `edit-background` which runs
+asynchronously plus `edit-status` which the browser polls for the result) and renders what
+comes back.
 
 ## Run locally
 
@@ -53,7 +55,7 @@ before you make the site public:
   tab uses the full **`gpt-image-2`** (Generate uses the cheaper `gpt-image-1-mini`; Describe
   uses `gpt-4o-mini`), so size the cap with the edit tab in mind.
 
-- [ ] **2. Netlify per-IP rate limiting.** Turn on rate limiting for the three functions
+- [ ] **2. Netlify per-IP rate limiting.** Turn on rate limiting for the functions
   (Netlify → site config → rate limiting) so a single visitor can't hammer the endpoints.
   A tight per-IP limit (e.g. a few requests per minute) is plenty for a demo.
 
@@ -83,8 +85,8 @@ Items 1–3 are set in dashboards, not in this repo. **Do not skip them.**
 On Modify and Describe, **Choose image…** opens the file picker, and **or use a sample**
 loads the bundled photo from `samples/`:
 
-- `samples/dog.png` — a real photo (fluffy white dog shaking off water), center-cropped to
-  768². By [Alvan Nee](https://unsplash.com/@alvannee) on
+- `samples/dog.png` — a real photo (fluffy white dog shaking off water), 1024²
+  (square). By [Alvan Nee](https://unsplash.com/@alvannee) on
   [Unsplash](https://unsplash.com/photos/rpkBHHu2TyE), credited in the page footer. Used
   under the Unsplash License. Both Modify and Describe use it: mask the dog and change
   something, or describe / read text from it.
