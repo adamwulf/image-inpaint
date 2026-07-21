@@ -644,7 +644,14 @@
     });
 
     // Start a FRESH history from a newly loaded image (upload / sample / Generate).
+    // GUARD HERE: this is the single choke point every image-load entry point funnels
+    // through — the in-tab controls (Choose / sample / file-input / drop) AND the
+    // cross-tab "Send to Modify" bridge (window.__loadModifyImage). Loading a new image
+    // mid-edit would reset versions/currentIndex and clear the mask, so the in-flight
+    // job's result would land on the wrong history when it resolves. Blocking it here
+    // covers every path, including tab-switching to Generate mid-edit.
     async function loadModifyImage(src) {
+      if (editing) return; // an edit is in flight — don't swap the base image out from under it
       try {
         // Normalize whatever we were given to a PNG dataURL for the history.
         var img = await loadImageFromSrc(src);
@@ -749,7 +756,9 @@
     frame.addEventListener('drop', async function (e) {
       e.preventDefault();
       frame.classList.remove('dragover');
-      if (editing) return; // drag-drop bypasses the disabled buttons — block it here too
+      // loadModifyImage() is the authoritative lock; bail early here too so a mid-edit drop
+      // doesn't waste a decode on a file the choke point would then silently ignore.
+      if (editing) return;
       var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (file) { var url = await fileToDataUrl(file); loadModifyImage(url); }
     });
