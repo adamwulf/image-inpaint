@@ -145,8 +145,12 @@
           fill.style.width = pct + '%';
         }, 300);
       },
-      done: function () {
+      // done() flashes the bar to 100% then hides it (a satisfying "complete"). Pass
+      // canceled=true to skip that flash and hide immediately — a canceled edit didn't
+      // finish, so a 100% success animation would be misleading.
+      done: function (canceled) {
         if (timer) { clearInterval(timer); timer = null; }
+        if (canceled) { track.hidden = true; fill.style.width = '0%'; return; }
         fill.style.width = '100%';
         setTimeout(function () { track.hidden = true; fill.style.width = '0%'; }, 450);
       }
@@ -179,11 +183,12 @@
     return data;
   }
 
-  // Thrown when the user cancels an in-flight edit. The caller checks `err.cancelled`
+  // Thrown when the user cancels an in-flight edit. The caller checks `err.canceled`
   // to treat it as a quiet no-op (restore the UI) rather than surfacing an error.
-  function CancelledError() {
-    var e = new Error('cancelled');
-    e.cancelled = true;
+  // (American spelling throughout, matching the user-facing "Cancel"/"Canceled" copy.)
+  function CanceledError() {
+    var e = new Error('canceled');
+    e.canceled = true;
     return e;
   }
 
@@ -196,13 +201,13 @@
   // under the job id; edit-status returns it. Resolves with { image, raw? } or throws.
   //
   // opts.signal (an AbortSignal) makes the edit CANCELLABLE: aborting it stops the poll
-  // loop (and the in-flight fetches) and rejects with a CancelledError the caller treats as
+  // loop (and the in-flight fetches) and rejects with a CanceledError the caller treats as
   // a quiet no-op. This is a CLIENT-SIDE cancel — the background job runs to completion on
   // the server, but we stop polling, so its result is never read and ages out unread.
   async function submitEdit(body, onProgress, opts) {
     var signal = opts && opts.signal;
     // If already aborted before we even start, don't fire the request.
-    if (signal && signal.aborted) throw CancelledError();
+    if (signal && signal.aborted) throw CanceledError();
     var jobId = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     var res;
     try {
@@ -214,9 +219,9 @@
       });
     } catch (e) {
       // An abort during the submit itself throws a native AbortError (a DOMException, not
-      // our CancelledError). Convert it to a user cancel; re-throw anything else (a real
+      // our CanceledError). Convert it to a user cancel; re-throw anything else (a real
       // network failure).
-      if (signal && signal.aborted) throw CancelledError();
+      if (signal && signal.aborted) throw CanceledError();
       throw e;
     }
     // edit-submit returns 202 Accepted once the background job is triggered.
@@ -232,9 +237,9 @@
     var deadline = start + 300000;
     var SLOW_AFTER = 150000;
     while (Date.now() < deadline) {
-      if (signal && signal.aborted) throw CancelledError();
+      if (signal && signal.aborted) throw CanceledError();
       await new Promise(function (r) { setTimeout(r, 1000); });
-      if (signal && signal.aborted) throw CancelledError();
+      if (signal && signal.aborted) throw CanceledError();
       // Fetch and parse are separated on purpose: a network hiccup OR a body that
       // fails to parse after a 200 (truncated response, backgrounded tab) must NOT
       // discard a finished result. Because edit-status no longer deletes on read, the
@@ -244,7 +249,7 @@
       try {
         sres = await fetch(statusUrl, { signal: signal });
       } catch (e) {
-        if (signal && signal.aborted) throw CancelledError();
+        if (signal && signal.aborted) throw CanceledError();
         continue; // transient network error — keep polling
       }
       var s;
@@ -475,14 +480,19 @@
     }
 
     // Lock/unlock the mask + version UI around an in-flight edit. Locking keeps the
-    // SUBMITTED mask fixed (no painting, no Clear, no switching versions/views) so the
-    // running job's result always matches the mask it was given. Swaps Regenerate for a
-    // Cancel button; the caller owns editAbort (Cancel aborts it).
+    // SUBMITTED mask fixed (no painting, no Clear, no switching versions/views, and no
+    // swapping the base image) so the running job's result always matches the mask it was
+    // given. Swaps Regenerate for a Cancel button; the caller owns editAbort (Cancel aborts
+    // it). The image-load controls are disabled here; drag-drop bypasses buttons entirely,
+    // so its handler also early-returns on `editing`.
     function setEditing(on) {
       editing = on;
       cancelBtn.hidden = !on;
       if (on) cancelBtn.disabled = false; // re-arm Cancel each time we enter editing
       runBtn.hidden = on;
+      chooseBtn.disabled = on;   // loading a new image mid-flight would reset the version
+      sampleBtn.disabled = on;   // history + clear the mask, corrupting the in-flight job
+      fileInput.disabled = on;   // when it resolves — so lock the image-load path too
       maskCanvas.classList.toggle('locked', on); // CSS: not-allowed cursor while locked
       updateMaskButtons();
     }
@@ -731,6 +741,7 @@
 
     // Click-to-upload only in the empty state; once loaded, clicks paint.
     frame.addEventListener('click', function (e) {
+      if (editing) return; // image-load is locked while an edit is in flight
       if (!hasImage() && !e.target.closest('canvas')) fileInput.click();
     });
     frame.addEventListener('dragover', function (e) { e.preventDefault(); frame.classList.add('dragover'); });
@@ -738,6 +749,7 @@
     frame.addEventListener('drop', async function (e) {
       e.preventDefault();
       frame.classList.remove('dragover');
+      if (editing) return; // drag-drop bypasses the disabled buttons — block it here too
       var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (file) { var url = await fileToDataUrl(file); loadModifyImage(url); }
     });
@@ -750,6 +762,7 @@
       var text = promptEl.value.trim();
       if (!text) { setStatus(status, 'Enter a prompt first.', true); return; }
       var masked = painted;
+      var canceled = false; // set in catch so finally can skip the progress "success" flash
 
       // Enter the editing state: lock the mask/version UI and swap Regenerate for Cancel.
       editAbort = new AbortController();
@@ -786,19 +799,20 @@
         // A user cancel is a quiet no-op: the mask/version state is untouched, so just
         // report it and let the finally clause restore the UI. Everything else is a real
         // error worth surfacing.
-        if (err && err.cancelled) {
+        if (err && err.canceled) {
+          canceled = true;
           setStatus(status, 'Canceled. Your mask is unchanged — edit it and Regenerate again.', false);
         } else {
           setStatus(status, err.message, true);
         }
       } finally {
         editAbort = null;
-        progress.done();
+        progress.done(canceled); // canceled => hide the bar without the 100% success flash
         setEditing(false); // unlock the mask/version UI and restore Regenerate
       }
     });
 
-    // Cancel an in-flight edit: abort the poll (submitEdit throws CancelledError). The run
+    // Cancel an in-flight edit: abort the poll (submitEdit throws CanceledError). The run
     // handler's finally restores the UI. The submitted mask is never touched, so the user
     // resumes exactly where they were. Disable Cancel immediately so a double-click can't
     // fire against a stale signal.
