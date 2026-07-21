@@ -171,6 +171,37 @@
     return data;
   }
 
+  // Submit a slow edit to the background function, then poll for its result. The edit
+  // (~25s) exceeds the synchronous serverless timeout, so edit-background returns 202
+  // immediately, does the work, and stashes {status,image,raw|error} in Netlify Blobs
+  // under a job id; edit-status returns it. Resolves with { image, raw? } or throws.
+  async function submitEdit(body, onProgress) {
+    var jobId = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    var res = await fetch('/.netlify/functions/edit-background', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(Object.assign({ jobId: jobId }, body))
+    });
+    // Background functions return 202 Accepted with no body.
+    if (res.status !== 202 && res.status !== 200) {
+      throw new Error('Could not start the edit (' + res.status + ').');
+    }
+    // Poll edit-status until done/error, or give up after ~90s.
+    var deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      await new Promise(function (r) { setTimeout(r, 2000); });
+      var s;
+      try {
+        var sres = await fetch('/.netlify/functions/edit-status?id=' + encodeURIComponent(jobId));
+        s = await sres.json();
+      } catch (e) { continue; } // transient — keep polling
+      if (s.status === 'done') return s;
+      if (s.status === 'error') throw new Error(s.error || 'edit failed');
+      if (onProgress) onProgress();
+    }
+    throw new Error('That took too long and timed out. Try again, or paint a smaller region / shorter prompt.');
+  }
+
   /* Sample image. dog.png is a real Unsplash photo (Alvan Nee, Unsplash License,
      credited in the footer), center-cropped to 768². Used for both Modify and
      Describe "or use a sample". */
@@ -644,7 +675,11 @@
         var body = { imageB64: canvasToPngBase64(sourceCanvas.canvas), prompt: text };
         // Only send a mask when one is painted; no mask => full-image rebuild.
         if (masked) body.maskB64 = exportMaskBase64();
-        var data = await postJson('/.netlify/functions/edit', body);
+        // The edit is slow (~25s), so it runs as a background function: submit, then
+        // poll for the result. status updates keep the user informed while awaiting.
+        var data = await submitEdit(body, function () {
+          setStatus(status, (masked ? 'Regenerating masked region' : 'Regenerating the whole image') + '… still working', false);
+        });
         // Masked edits return `image` = the feathered composite (only the masked region
         // changed) plus `raw` = the whole canvas the model regenerated. A no-mask rebuild
         // returns just `image` (there's nothing to composite / no "raw vs result").

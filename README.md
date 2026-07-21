@@ -17,16 +17,18 @@ and renders what comes back.
 
 ## Run locally
 
-The functions are **zero-dependency** — they call the OpenAI REST API with plain `fetch`,
-so there's no `npm install` step.
+The functions call the OpenAI REST API with plain `fetch`; the edit path additionally uses
+`sharp` (compositing) and `@netlify/blobs` (background-job hand-off), so install once.
 
 ```bash
+npm install
 export OPENAI_API_KEY=sk-...        # or put it in a local .env (git-ignored)
-npx netlify dev                     # serves index.html + the three functions
+npx netlify dev                     # serves index.html + the functions
 ```
 
-Then open the URL Netlify prints (usually http://localhost:8888). (`netlify dev` still
-bundles the functions; it just has nothing to install.)
+Then open the URL Netlify prints (usually http://localhost:8888). `netlify dev` runs the
+background function and a sandboxed local Netlify Blobs store, so the Modify tab works
+end-to-end locally.
 
 Setting the key:
 - **Local:** an environment variable as above, or a `.env` file in the repo root
@@ -66,17 +68,15 @@ before you make the site public:
   required attribution in the footer. Use your own images or genuinely licensed sources
   (CC0 / Unsplash / Pexels / Pixabay / Wikimedia). Do not ship unlicensed images.
 
-- [ ] **5. Move the edit path to an async / background function.** The Modify edit is slow:
-  the OpenAI call runs ~20–28 s and the server-side composite adds ~2–3 s. That does **not**
-  fit a synchronous serverless function — Netlify's default function timeout is 10 s (26 s on
-  Pro), and even Pro's 26 s is intermittently blown by a ~30 s edit. Local `netlify dev` allows
-  30 s, so it's fine for a **local** recording, but a robust **public** deploy needs a
-  [Netlify Background Function](https://docs.netlify.com/functions/background-functions/):
-  the browser submits the edit, gets a job id, and polls for the result (with a spinner that
-  can run 30 s+). The app ships a graceful timeout message today, but that's a fallback, not a
-  fix. Build this before relying on the Modify tab in production.
+Items 1–3 are set in dashboards, not in this repo. **Do not skip them.**
 
-Items 1–3 are set in dashboards, not in this repo; #5 is a code change. **Do not skip them.**
+> **Already handled — the slow edit path.** The Modify edit takes ~25–33 s (OpenAI ~20–28 s
+> + the composite), which blows a synchronous serverless function's timeout (10 s on the free
+> plan). So the edit already runs as a
+> [Netlify Background Function](https://docs.netlify.com/build/functions/background-functions/)
+> (`edit-background.mjs`, up to 15 min, free-plan compatible): the browser submits the job,
+> the function stashes the result in [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/),
+> and the browser polls `edit-status.mjs` for it. No plan upgrade needed; nothing to do here.
 
 ## Sample images
 
@@ -130,9 +130,10 @@ replacement). Measured, an edit drifts the *unmasked* area by ~45–55 / 255 on 
 to silently change things you never painted (in testing, a masked edit on one side turned the
 dog's nose pink on the other).
 
-So `edit.mjs` confines the edit itself: it keeps the **original** outside the mask and blends
-the AI result **inside** it, with a **feathered** (Gaussian-blurred) mask edge so the seam
-fades. Only the painted region changes; everything else is pixel-exact to the source.
+So `edit-background.mjs` confines the edit itself: it keeps the **original** outside the mask
+and blends the AI result **inside** it, with a **feathered** (Gaussian-blurred) mask edge so
+the seam fades. Only the painted region changes; everything else is pixel-exact to the source.
+(Paint nothing and press Regenerate to skip the mask and rebuild the whole image instead.)
 
 This is also the lesson: generative AI doesn't surgically edit — it *regenerates*, and quietly
 changes things you didn't ask for. The Modify tab's **"What the AI changed"** toggle shows the
@@ -142,13 +143,14 @@ drift the mask was supposed to prevent.
 ## Files
 
 ```
-index.html                     UI + house-style <style> block (self-contained, no CDNs)
-app.js                         all client logic (tabs, mask, downscale, fetch, bridge)
-netlify/functions/generate.mjs images.generate  (gpt-image-1-mini)
-netlify/functions/edit.mjs     images.edit       (gpt-image-2, masked + server composite)
-netlify/functions/describe.mjs chat.completions  (gpt-4o-mini vision)
+index.html                            UI + house-style <style> block (self-contained, no CDNs)
+app.js                                all client logic (tabs, mask, downscale, submit+poll, bridges)
+netlify/functions/generate.mjs        images.generate  (gpt-image-1-mini, synchronous)
+netlify/functions/edit-background.mjs images.edit       (gpt-image-2, masked + server composite; background)
+netlify/functions/edit-status.mjs     poll endpoint for the background edit result (Netlify Blobs)
+netlify/functions/describe.mjs        chat.completions  (gpt-4o-mini vision, synchronous)
 netlify.toml                   publish "." + functions dir
-package.json                   type: module (zero runtime dependencies)
+package.json                          type: module; deps: sharp, @netlify/blobs (edit path only)
 samples/                       bundled sample photo (dog.png)
 ```
 
