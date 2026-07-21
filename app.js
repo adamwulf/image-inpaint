@@ -197,13 +197,16 @@
     if (res.status !== 202 && res.status !== 200) {
       throw new Error('Could not start the edit (' + res.status + ').');
     }
-    // Poll edit-status until done/error, or give up after ~150s. (The background
+    // Poll edit-status until done/error, or give up after ~300s. (The background
     // function itself has up to 15 min; the client cap is generous but bounded so a
-    // stuck job doesn't spin forever.)
+    // stuck job doesn't spin forever.) After ~150s we flag onProgress as "slow" so
+    // the caller can reassure the user we're still waiting rather than stalled.
     var statusUrl = '/.netlify/functions/edit-status?id=' + encodeURIComponent(jobId);
-    var deadline = Date.now() + 150000;
+    var start = Date.now();
+    var deadline = start + 300000;
+    var SLOW_AFTER = 150000;
     while (Date.now() < deadline) {
-      await new Promise(function (r) { setTimeout(r, 2000); });
+      await new Promise(function (r) { setTimeout(r, 1000); });
       // Fetch and parse are separated on purpose: a network hiccup OR a body that
       // fails to parse after a 200 (truncated response, backgrounded tab) must NOT
       // discard a finished result. Because edit-status no longer deletes on read, the
@@ -223,7 +226,7 @@
         if (s.status === 'error') throw new Error(s.error || 'edit failed');
         return s;
       }
-      if (onProgress) onProgress();
+      if (onProgress) onProgress({ slow: Date.now() - start >= SLOW_AFTER });
     }
     throw new Error('That took too long and timed out. Try again, or paint a smaller region / shorter prompt.');
   }
@@ -703,8 +706,11 @@
         if (masked) body.maskB64 = exportMaskBase64();
         // The edit is slow (~25s), so it runs as a background function: submit, then
         // poll for the result. status updates keep the user informed while awaiting.
-        var data = await submitEdit(body, function () {
-          setStatus(status, (masked ? 'Regenerating masked region' : 'Regenerating the whole image') + '… still working', false);
+        var data = await submitEdit(body, function (p) {
+          var base = masked ? 'Regenerating masked region' : 'Regenerating the whole image';
+          setStatus(status, base + (p && p.slow
+            ? '… still working, this one is taking longer than usual — hang tight'
+            : '… still working'), false);
         });
         // Masked edits return `image` = the feathered composite (only the masked region
         // changed) plus `raw` = the whole canvas the model regenerated. A no-mask rebuild

@@ -56,11 +56,17 @@ export default async (req) => {
     // context.site.url would also work, but a relative path against the request origin is
     // robust across the deploy's own domain and any branch/deploy-preview subdomain.
     const origin = new URL(req.url).origin;
+    // TIMING: stamp when we fire the trigger. The gap between this and edit-background's
+    // `handler-started` log is the Netlify queue + cold-start latency for the background
+    // invocation — the prime suspect for the 120s+ production wait.
+    const tTrigger = Date.now();
+    console.log(`[edit-timing] jobId=%s submit-firing-trigger at=%d`, jobId, tTrigger);
     const bgRes = await fetch(`${origin}/.netlify/functions/edit-background`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jobId }),
     });
+    console.log(`[edit-timing] jobId=%s trigger-accepted=%dms status=%d`, jobId, Date.now() - tTrigger, bgRes.status);
     // Background functions answer 202 Accepted. Anything else means the trigger failed;
     // surface it AND drop the orphaned input blob so it doesn't linger.
     if (bgRes.status !== 202) {

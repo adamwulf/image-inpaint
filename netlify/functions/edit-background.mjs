@@ -47,14 +47,23 @@ const STORE = 'edit-jobs';
 export default async (req) => {
   let jobId;
   try {
+    // TIMING: log the moment this handler actually begins executing. Compared against the
+    // `submit->trigger fired` timestamp in edit-submit's logs, the gap between them is the
+    // pure Netlify queue + cold-start latency for the background invocation — the number
+    // that's invisible today and the prime suspect for the 120s+ production wait.
+    const tStart = Date.now();
+    console.log(`[edit-timing] background handler start jobId=%s at=%d`, undefined, tStart);
     const body = await req.json();
     jobId = body.jobId;
     if (!jobId) return; // nothing to key the result on; drop silently
+    console.log(`[edit-timing] jobId=%s handler-started`, jobId);
     const store = getStore(STORE);
 
     // The heavy inputs were stashed by edit-submit under `input:<jobId>` (this request
     // body is just { jobId }, to stay under the 256 KB background-function cap).
+    const tBlobRead = Date.now();
     const input = await store.get(`input:${jobId}`, { type: 'json' });
+    console.log(`[edit-timing] jobId=%s blobs-read=%dms`, jobId, Date.now() - tBlobRead);
     if (!input) return finish(store, jobId, { status: 'error', error: 'edit inputs expired or missing' });
     const { imageB64, maskB64, prompt } = input; // browser stripped the data: prefix
 
@@ -77,12 +86,16 @@ export default async (req) => {
     form.append('quality', 'low');
     form.append('n', '1');
 
+    const tOpenAI = Date.now();
     const res = await fetch(OPENAI_URL, {
       method: 'POST',
       headers: { 'authorization': `Bearer ${key}` }, // fetch sets the multipart boundary
       body: form,
     });
     const data = await res.json();
+    // TIMING: pure OpenAI edit duration. If this is ~30s (matching local) the model is NOT
+    // the bottleneck — the extra production latency is Netlify queue/cold-start above.
+    console.log(`[edit-timing] jobId=%s openai=%dms status=%d`, jobId, Date.now() - tOpenAI, res.status);
     if (!res.ok) return finish(store, jobId, { status: 'error', error: data?.error?.message || 'edit failed' });
 
     const rawB64 = data.data[0]?.b64_json;
