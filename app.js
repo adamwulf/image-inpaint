@@ -196,8 +196,9 @@
   // under the job id; edit-status returns it. Resolves with { image, raw? } or throws.
   //
   // opts.signal (an AbortSignal) makes the edit CANCELLABLE: aborting it stops the poll
-  // loop, fires a best-effort edit-cancel so the background job bails early (and cleans up
-  // its own blobs), and rejects with a CancelledError the caller treats as a quiet no-op.
+  // loop (and the in-flight fetches) and rejects with a CancelledError the caller treats as
+  // a quiet no-op. This is a CLIENT-SIDE cancel — the background job runs to completion on
+  // the server, but we stop polling, so its result is never read and ages out unread.
   async function submitEdit(body, onProgress, opts) {
     var signal = opts && opts.signal;
     // If already aborted before we even start, don't fire the request.
@@ -213,9 +214,9 @@
       });
     } catch (e) {
       // An abort during the submit itself throws a native AbortError (a DOMException, not
-      // our CancelledError). Convert it: cancel the (possibly not-yet-created) job and
-      // report it as a user cancel; re-throw anything else (a real network failure).
-      if (signal && signal.aborted) throw cancelJob(jobId);
+      // our CancelledError). Convert it to a user cancel; re-throw anything else (a real
+      // network failure).
+      if (signal && signal.aborted) throw CancelledError();
       throw e;
     }
     // edit-submit returns 202 Accepted once the background job is triggered.
@@ -231,9 +232,9 @@
     var deadline = start + 300000;
     var SLOW_AFTER = 150000;
     while (Date.now() < deadline) {
-      if (signal && signal.aborted) throw cancelJob(jobId);
+      if (signal && signal.aborted) throw CancelledError();
       await new Promise(function (r) { setTimeout(r, 1000); });
-      if (signal && signal.aborted) throw cancelJob(jobId);
+      if (signal && signal.aborted) throw CancelledError();
       // Fetch and parse are separated on purpose: a network hiccup OR a body that
       // fails to parse after a 200 (truncated response, backgrounded tab) must NOT
       // discard a finished result. Because edit-status no longer deletes on read, the
@@ -243,7 +244,7 @@
       try {
         sres = await fetch(statusUrl, { signal: signal });
       } catch (e) {
-        if (signal && signal.aborted) throw cancelJob(jobId);
+        if (signal && signal.aborted) throw CancelledError();
         continue; // transient network error — keep polling
       }
       var s;
@@ -259,17 +260,6 @@
       if (onProgress) onProgress({ slow: Date.now() - start >= SLOW_AFTER });
     }
     throw new Error('That took too long and timed out. Try again, or paint a smaller region / shorter prompt.');
-  }
-
-  // Tell the server to cancel a still-running background job, then return a CancelledError
-  // for the poll loop to throw. edit-cancel writes a cancel flag the background function
-  // checks (before/around the OpenAI call) so it bails early and cleans up its own blobs;
-  // this is best-effort (a job already past its OpenAI call just finishes normally, and the
-  // client ignores the result since it has already stopped polling).
-  function cancelJob(jobId) {
-    fetch('/.netlify/functions/edit-cancel?id=' + encodeURIComponent(jobId), { method: 'POST' })
-      .catch(function () {}); // best-effort — client stops regardless
-    return CancelledError();
   }
 
   /* Sample image. dog.png is a real Unsplash photo (Alvan Nee, Unsplash License,
@@ -772,7 +762,7 @@
         if (masked) body.maskB64 = exportMaskBase64();
         // The edit is slow (~25s), so it runs as a background function: submit, then
         // poll for the result. status updates keep the user informed while awaiting.
-        // The abort signal lets Cancel stop the poll (and bail the server job).
+        // The abort signal lets Cancel stop the poll immediately (client-side).
         var data = await submitEdit(body, function (p) {
           var base = masked ? 'Regenerating masked region' : 'Regenerating the whole image';
           setStatus(status, base + (p && p.slow
@@ -808,10 +798,10 @@
       }
     });
 
-    // Cancel an in-flight edit: abort the poll (submitEdit throws CancelledError and also
-    // fires edit-cancel so the background job bails). The run handler's finally restores
-    // the UI. The submitted mask is never touched, so the user resumes exactly where they
-    // were. Disable Cancel immediately so a double-click can't fire against a stale signal.
+    // Cancel an in-flight edit: abort the poll (submitEdit throws CancelledError). The run
+    // handler's finally restores the UI. The submitted mask is never touched, so the user
+    // resumes exactly where they were. Disable Cancel immediately so a double-click can't
+    // fire against a stale signal.
     cancelBtn.addEventListener('click', function () {
       if (!editAbort) return;
       cancelBtn.disabled = true;
