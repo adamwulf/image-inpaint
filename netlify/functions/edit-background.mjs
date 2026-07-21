@@ -20,19 +20,16 @@ import { getStore } from '@netlify/blobs';
 // suffix ALSO marks it background; the function is invoked at the standard
 // /.netlify/functions/edit-background path (no custom `path` — that conflicts with it).
 //
-// rateLimit: per-IP spend safeguard on a public deploy — 1 request every 3 seconds
-// so a single visitor can't hammer the (expensive gpt-image-2) edit endpoint.
-// Netlify returns HTTP 429 automatically past the window limit. On the free/Starter
-// plan a project gets 2 rate-limit rules total; this + generate use both (see README).
-// Note: the STATUS poll (edit-status.mjs) is intentionally NOT rate-limited — the
-// browser polls it every ~second, so a 3s limit would break the app's own wait loop.
+// NOTE: NO rateLimit here — it is INCOMPATIBLE with background:true. Netlify's
+// `rateLimit` config runs in the edge/traffic layer that only fronts SYNCHRONOUS
+// functions; declaring it on a background function makes Netlify reject the invocation
+// at the platform layer — a synchronous 500 with NO function log (the handler never
+// runs). That is exactly the failure this fixed. So the edit path is NOT covered by
+// an in-code per-IP rate limit; the OpenAI hard spend cap (README safeguard #1) is the
+// backstop for it. If per-IP limiting of edits is ever required, do it at the edge
+// (a Netlify Edge Function / redirect rule in netlify.toml), not via this config.
 export const config = {
   background: true,
-  rateLimit: {
-    windowSize: 3,       // seconds
-    windowLimit: 1,      // max requests per window
-    aggregateBy: ['ip'], // key by client IP
-  },
 };
 
 const OPENAI_URL = 'https://api.openai.com/v1/images/edits';
