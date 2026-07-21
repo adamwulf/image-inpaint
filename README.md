@@ -56,14 +56,21 @@ before you make the site public:
   uses `gpt-4o-mini`), so size the cap with the edit tab in mind.
 
 - [x] **2. Netlify per-IP rate limiting.** Done in code via the `config.rateLimit`
-  export on `generate.mjs` and `edit-background.mjs`: **1 request / 3 s per IP**
+  export on `generate.mjs`: **1 request / 3 s per IP**
   (`windowSize: 3, windowLimit: 1, aggregateBy: ['ip']`), so a single visitor can't
-  hammer the two OpenAI image endpoints. Netlify returns HTTP 429 past the limit —
-  this works on the free/Starter plan (no dashboard config needed). Notes:
-  - The free/Starter plan allows **2 rate-limit rules per project**, and these two
-    functions use both. `describe.mjs` (gpt-4o-mini vision) is therefore **not**
-    rate-limited — the $-cap in step 1 is its backstop. If you upgrade to Pro (5
-    rules), add the same `config.rateLimit` block to `describe.mjs`.
+  hammer the synchronous image-generation endpoint. Netlify returns HTTP 429 past the
+  limit — this works on the free/Starter plan (no dashboard config needed). Notes:
+  - **`edit-background.mjs` is NOT rate-limited via `config.rateLimit`** — that config
+    is incompatible with `background: true`. Netlify's `rateLimit` runs in the edge
+    layer that only fronts *synchronous* functions, so declaring it on a background
+    function makes the platform reject the invocation: a synchronous **500 with no
+    function log**. The masked-edit path therefore relies on the OpenAI **spend cap
+    (step 1)** as its backstop. To rate-limit edits, add an Edge Function / redirect
+    rule in `netlify.toml` instead — do not put `rateLimit` back on the function config.
+  - `describe.mjs` (gpt-4o-mini vision) is also **not** rate-limited — the $-cap in
+    step 1 is its backstop. The free/Starter plan allows **2 rate-limit rules per
+    project**; only `generate.mjs` uses one today, so there is headroom to add a
+    `config.rateLimit` block to `describe.mjs` if desired.
   - `edit-status.mjs` is deliberately **left unlimited**: the browser polls it every
     ~second while a background edit runs, so a 3 s limit would break the wait loop.
 
