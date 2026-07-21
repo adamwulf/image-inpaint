@@ -6,6 +6,19 @@
 // single requests).
 const OPENAI_URL = 'https://api.openai.com/v1/images/generations';
 
+// Per-IP rate limit: 1 request every 3 seconds. This is a spend safeguard on a
+// public deploy so a single visitor can't hammer the OpenAI endpoint. Netlify
+// returns HTTP 429 automatically when the window limit is exceeded — no code
+// path here handles it. On the free/Starter plan a project gets 2 rate-limit
+// rules total; this + edit-background use both (see README deploy safeguards).
+export const config = {
+  rateLimit: {
+    windowSize: 3,       // seconds
+    windowLimit: 1,      // max requests per window
+    aggregateBy: ['ip'], // key by client IP
+  },
+};
+
 export default async (req) => {
   try {
     const key = process.env.OPENAI_API_KEY;
