@@ -2,5 +2,6 @@ node_modules/
 .env
 .env.*
 .netlify/
+deno.lock
 npm-debug.log*
 .DS_Store
