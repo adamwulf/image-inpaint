@@ -1,6 +1,6 @@
-# Netlify config — serves index.html at the repo root and the four functions
-# (generate, edit-background, edit-status, describe) under /.netlify/functions/*.
-# `netlify dev` uses this to run everything locally.
+# Netlify config — serves index.html at the repo root and the five functions
+# (generate, edit-submit, edit-background, edit-status, describe) under
+# /.netlify/functions/*. `netlify dev` uses this to run everything locally.
 
 [build]
   publish = "."

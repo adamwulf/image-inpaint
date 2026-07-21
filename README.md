@@ -56,21 +56,22 @@ before you make the site public:
   uses `gpt-4o-mini`), so size the cap with the edit tab in mind.
 
 - [x] **2. Netlify per-IP rate limiting.** Done in code via the `config.rateLimit`
-  export on `generate.mjs`: **1 request / 3 s per IP**
+  export on `generate.mjs` **and** `edit-submit.mjs`: **1 request / 3 s per IP**
   (`windowSize: 3, windowLimit: 1, aggregateBy: ['ip']`), so a single visitor can't
-  hammer the synchronous image-generation endpoint. Netlify returns HTTP 429 past the
+  hammer the (paid) generate or edit endpoints. Netlify returns HTTP 429 past the
   limit — this works on the free/Starter plan (no dashboard config needed). Notes:
-  - **`edit-background.mjs` is NOT rate-limited via `config.rateLimit`** — that config
-    is incompatible with `background: true`. Netlify's `rateLimit` runs in the edge
-    layer that only fronts *synchronous* functions, so declaring it on a background
-    function makes the platform reject the invocation: a synchronous **500 with no
-    function log**. The masked-edit path therefore relies on the OpenAI **spend cap
-    (step 1)** as its backstop. To rate-limit edits, add an Edge Function / redirect
-    rule in `netlify.toml` instead — do not put `rateLimit` back on the function config.
-  - `describe.mjs` (gpt-4o-mini vision) is also **not** rate-limited — the $-cap in
-    step 1 is its backstop. The free/Starter plan allows **2 rate-limit rules per
-    project**; only `generate.mjs` uses one today, so there is headroom to add a
-    `config.rateLimit` block to `describe.mjs` if desired.
+  - **The edit is rate-limited at `edit-submit.mjs`, NOT `edit-background.mjs`.**
+    `config.rateLimit` is incompatible with `background: true`: Netlify's `rateLimit`
+    runs in the edge layer that only fronts *synchronous* functions, so declaring it on
+    a background function makes the platform reject the invocation — a synchronous
+    **500 with no function log**. `edit-submit` is the synchronous front door for the
+    edit (it also exists to dodge the 256 KB body cap; see the slow-edit note below), so
+    the rate limit lives there and covers the whole edit path. Do **not** put `rateLimit`
+    back on `edit-background`'s config.
+  - `describe.mjs` (gpt-4o-mini vision) is **not** rate-limited — the $-cap in step 1 is
+    its backstop. The free/Starter plan allows **2 rate-limit rules per project**, and
+    `generate.mjs` + `edit-submit.mjs` now use both, so there is no headroom left for a
+    `describe.mjs` rule without dropping one of them.
   - `edit-status.mjs` is deliberately **left unlimited**: the browser polls it every
     ~second while a background edit runs, so a 3 s limit would break the wait loop.
 
@@ -89,11 +90,24 @@ Items 1–3 are set in dashboards, not in this repo. **Do not skip them.**
 
 > **Already handled — the slow edit path.** The Modify edit takes ~25–33 s (OpenAI ~20–28 s
 > + the composite), which blows a synchronous serverless function's timeout (10 s on the free
-> plan). So the edit already runs as a
+> plan). So the edit runs as a
 > [Netlify Background Function](https://docs.netlify.com/build/functions/background-functions/)
 > (`edit-background.mjs`, up to 15 min, free-plan compatible): the browser submits the job,
 > the function stashes the result in [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/),
 > and the browser polls `edit-status.mjs` for it. No plan upgrade needed; nothing to do here.
+>
+> **The 256 KB catch (and why the edit is a two-hop submit).** Background functions cap the
+> **request body at 256 KB**; synchronous functions get 6 MB. A base64 1024² PNG is ~1.4 MB,
+> so POSTing the image straight to `edit-background` is rejected at Netlify's **platform layer,
+> before the handler runs** — the browser sees a **500** and `netlify logs:function
+> edit-background` shows **nothing** (the handler never executed, so it never logged). It
+> passes under `netlify dev` because local dev has no 256 KB gate, which is what makes this
+> bug deploy-only and easy to miss. Fix: the browser POSTs the heavy payload to the
+> **synchronous** `edit-submit.mjs` (6 MB limit), which stashes it in Blobs under
+> `input:<jobId>` and triggers `edit-background` with only `{ jobId }` (tiny). `edit-background`
+> reads the inputs back from Blobs, does the work, and cleans up the input blob when it
+> finishes. (`edit-submit` also carries the per-IP `rateLimit` for the edit path, which
+> `edit-background` cannot — see the rate-limit note below.)
 
 ## Sample images
 
@@ -163,6 +177,8 @@ drift the mask was supposed to prevent.
 index.html                            UI + house-style <style> block (self-contained, no CDNs)
 app.js                                all client logic (tabs, mask, downscale, submit+poll, bridges)
 netlify/functions/generate.mjs        images.generate  (gpt-image-1-mini, synchronous)
+netlify/functions/edit-submit.mjs     synchronous front door for the edit: stashes the image+mask in
+                                      Blobs (dodges the 256 KB background body cap) and triggers edit-background
 netlify/functions/edit-background.mjs images.edit       (gpt-image-2, masked + server composite; background)
 netlify/functions/edit-status.mjs     poll endpoint for the background edit result (Netlify Blobs)
 netlify/functions/describe.mjs        chat.completions  (gpt-4o-mini vision, synchronous)

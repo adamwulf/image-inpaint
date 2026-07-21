@@ -5,6 +5,14 @@
 // background function returns 202 immediately and may run up to 15 min; it writes the
 // result to Netlify Blobs, and the browser polls edit-status.mjs for it.
 //
+// INPUTS COME FROM BLOBS, NOT THE REQUEST BODY. Background functions have a hard 256 KB
+// request-body limit — far smaller than a base64 1024x1024 PNG (~1.4 MB) + mask. So the
+// browser POSTs the heavy payload to the SYNCHRONOUS edit-submit function (6 MB limit),
+// which stashes it in Blobs under `input:<jobId>` and triggers this function with only
+// { jobId }. We read the inputs back from Blobs here. (Passing the image in this request
+// body was the old bug: Netlify rejected the oversized invocation at the platform layer —
+// a 500 with NO function log because the handler never ran. See edit-submit.mjs.)
+//
 // OPENAI_API_KEY is read from the environment and NEVER sent to the browser.
 // Deploy safeguards (OpenAI spend cap + Netlify per-IP rate limiting) are in README.md.
 //
@@ -41,9 +49,14 @@ export default async (req) => {
   try {
     const body = await req.json();
     jobId = body.jobId;
-    const { imageB64, maskB64, prompt } = body; // browser strips the data: prefix
     if (!jobId) return; // nothing to key the result on; drop silently
     const store = getStore(STORE);
+
+    // The heavy inputs were stashed by edit-submit under `input:<jobId>` (this request
+    // body is just { jobId }, to stay under the 256 KB background-function cap).
+    const input = await store.get(`input:${jobId}`, { type: 'json' });
+    if (!input) return finish(store, jobId, { status: 'error', error: 'edit inputs expired or missing' });
+    const { imageB64, maskB64, prompt } = input; // browser stripped the data: prefix
 
     const key = process.env.OPENAI_API_KEY;
     if (!key) return finish(store, jobId, { status: 'error', error: 'Server missing OPENAI_API_KEY.' });
@@ -85,14 +98,17 @@ export default async (req) => {
     return finish(store, jobId, { status: 'done', image: compositeB64, raw: rawB64 });
   } catch (e) {
     try {
-      if (jobId) await getStore(STORE).setJSON(jobId, { status: 'error', error: e?.message || 'edit failed' });
+      if (jobId) await finish(getStore(STORE), jobId, { status: 'error', error: e?.message || 'edit failed' });
     } catch (_) { /* best effort */ }
   }
 };
 
-// Write the finished job to the blob store (the browser polls edit-status for it).
+// Write the finished job to the blob store (the browser polls edit-status for it), then
+// drop the now-consumed input blob. Order matters: write the result FIRST so a failure
+// deleting the (large) input never loses the result the user paid for.
 async function finish(store, jobId, result) {
   await store.setJSON(jobId, result);
+  try { await store.delete(`input:${jobId}`); } catch (_) { /* best effort */ }
 }
 
 // Blend: out = source*(1-t) + aiResult*t, where t is a FEATHERED edit-strength map from

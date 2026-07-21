@@ -179,18 +179,21 @@
     return data;
   }
 
-  // Submit a slow edit to the background function, then poll for its result. The edit
-  // (~25s) exceeds the synchronous serverless timeout, so edit-background returns 202
-  // immediately, does the work, and stashes {status,image,raw|error} in Netlify Blobs
-  // under a job id; edit-status returns it. Resolves with { image, raw? } or throws.
+  // Submit a slow edit, then poll for its result. The heavy payload (base64 image + mask)
+  // goes to the SYNCHRONOUS edit-submit function: background functions cap the request body
+  // at 256 KB, far under a ~1.4 MB image, so posting the image straight to edit-background
+  // gets rejected at Netlify's platform layer (a 500 with no function log). edit-submit
+  // (6 MB limit) stashes the payload in Blobs and triggers edit-background with just the
+  // jobId; edit-background does the ~25s work and stashes {status,image,raw|error} in Blobs
+  // under the job id; edit-status returns it. Resolves with { image, raw? } or throws.
   async function submitEdit(body, onProgress) {
     var jobId = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-    var res = await fetch('/.netlify/functions/edit-background', {
+    var res = await fetch('/.netlify/functions/edit-submit', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(Object.assign({ jobId: jobId }, body))
     });
-    // Background functions return 202 Accepted with no body.
+    // edit-submit returns 202 Accepted once the background job is triggered.
     if (res.status !== 202 && res.status !== 200) {
       throw new Error('Could not start the edit (' + res.status + ').');
     }
