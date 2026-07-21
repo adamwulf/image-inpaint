@@ -55,9 +55,17 @@ before you make the site public:
   tab uses the full **`gpt-image-2`** (Generate uses the cheaper `gpt-image-1-mini`; Describe
   uses `gpt-4o-mini`), so size the cap with the edit tab in mind.
 
-- [ ] **2. Netlify per-IP rate limiting.** Turn on rate limiting for the functions
-  (Netlify → site config → rate limiting) so a single visitor can't hammer the endpoints.
-  A tight per-IP limit (e.g. a few requests per minute) is plenty for a demo.
+- [x] **2. Netlify per-IP rate limiting.** Done in code via the `config.rateLimit`
+  export on `generate.mjs` and `edit-background.mjs`: **1 request / 3 s per IP**
+  (`windowSize: 3, windowLimit: 1, aggregateBy: ['ip']`), so a single visitor can't
+  hammer the two OpenAI image endpoints. Netlify returns HTTP 429 past the limit —
+  this works on the free/Starter plan (no dashboard config needed). Notes:
+  - The free/Starter plan allows **2 rate-limit rules per project**, and these two
+    functions use both. `describe.mjs` (gpt-4o-mini vision) is therefore **not**
+    rate-limited — the $-cap in step 1 is its backstop. If you upgrade to Pro (5
+    rules), add the same `config.rateLimit` block to `describe.mjs`.
+  - `edit-status.mjs` is deliberately **left unlimited**: the browser polls it every
+    ~second while a background edit runs, so a 3 s limit would break the wait loop.
 
 - [ ] **3. `OPENAI_API_KEY` in the Netlify environment.** Site settings → Environment
   variables → add `OPENAI_API_KEY` for the deployed site (this is separate from your local
